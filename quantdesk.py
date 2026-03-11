@@ -107,6 +107,11 @@ def compute_metrics(close):
         r   = log_rets[t].squeeze().dropna()
         pct = rets[t].squeeze().dropna()
 
+        # Skip ticker if rate-limited or empty
+        if len(p) < 10 or len(r) < 10:
+            print(f"⚠  Skipping {t} — insufficient data ({len(r)} rows)")
+            continue
+
         ann_ret   = float(r.mean() * 252)
         ann_vol   = float(r.std()  * np.sqrt(252))
         sharpe    = ann_ret / ann_vol if ann_vol else 0
@@ -200,16 +205,26 @@ def corr_matrix(metrics):
 # ─────────────────────────────────────────────
 #  INITIAL LOAD
 # ─────────────────────────────────────────────
+import time
 print("⬇  Fetching live data from Yahoo Finance …")
-try:
-    CLOSE   = fetch_all()
-    METRICS = compute_metrics(CLOSE)
-    CORR    = corr_matrix(METRICS)
-    print(f"✅  Data loaded — {len([t for t in TICKERS if t in METRICS])} tickers · "
-          f"{len(CLOSE)} days")
-except Exception as e:
-    print(f"❌  Error fetching data: {e}")
-    raise
+for attempt in range(3):
+    try:
+        CLOSE   = fetch_all()
+        METRICS = compute_metrics(CLOSE)
+        CORR    = corr_matrix(METRICS)
+        loaded  = [t for t in TICKERS if t in METRICS]
+        print(f"✅  Data loaded — {len(loaded)} tickers · {len(CLOSE)} days")
+        if len(loaded) < 5:
+            raise ValueError(f"Too few tickers ({len(loaded)}), retrying…")
+        break
+    except Exception as e:
+        print(f"⚠  Attempt {attempt+1}/3 failed: {e}")
+        if attempt < 2:
+            print("   Waiting 15s before retry…")
+            time.sleep(15)
+        else:
+            print("❌  Could not load data after 3 attempts.")
+            raise
 
 VALID_TICKERS = [t for t in TICKERS if t in METRICS]
 
@@ -912,5 +927,8 @@ def render_comparison(ticker):
 #  RUN
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
-    print("\n🚀  QuantDesk is running at  http://127.0.0.1:8050\n")
-    app.run(debug=False, port=8050)
+    import os
+    port = int(os.environ.get("PORT", 8050))
+    host = "0.0.0.0"
+    print(f"\n🚀  QuantDesk is running at  http://{host}:{port}\n")
+    app.run(debug=False, host=host, port=port)
