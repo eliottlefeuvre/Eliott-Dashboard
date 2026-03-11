@@ -42,10 +42,10 @@ BG3     = "#0a1628"
 BORDER  = "#0d2040"
 TXT     = "#c9d4e8"
 DIM     = "#556070"
-ACCENT  = "#00f5d4"
-RED     = "#f72585"
-YELLOW  = "#fee440"
-BLUE    = "#4cc9f0"
+ACCENT  = "#00c853"   # green
+RED     = "#ff1744"   # red
+YELLOW  = "#ffab00"   # amber (keeps contrast for neutral metrics)
+BLUE    = "#64b5f6"   # soft blue (for titles/labels)
 
 def hex_rgba(hex_color, alpha=0.1):
     """Convert '#rrggbb' to 'rgba(r,g,b,alpha)' — required by Plotly 5.x fillcolor."""
