@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: quantdesk
+    runtime: python3
+    buildCommand: pip install -r requirements.txt
+    startCommand: python quantdesk.py
+    envVars:
+      - key: PORT
+        generateValue: true
