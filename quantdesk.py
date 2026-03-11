@@ -295,7 +295,7 @@ def make_layout():
         # ── HEADER ──────────────────────────────────────
         html.Div([
             html.Div([
-                html.Span("QUANT", style={"color":ACCENT,"fontFamily":"Bebas Neue","fontSize":"28px","letterSpacing":"3px"}),
+                html.Span("ELIOTT", style={"color":ACCENT,"fontFamily":"Bebas Neue","fontSize":"28px","letterSpacing":"3px"}),
                 html.Span("DESK", style={"color":RED,"fontFamily":"Bebas Neue","fontSize":"28px","letterSpacing":"3px"}),
                 html.Div(style={"width":"1px","height":"24px","background":BORDER,"margin":"0 16px"}),
                 html.Div("US MEGA-CAP TECH  ·  LIVE DATA", style={"color":BLUE,"fontSize":"10px","letterSpacing":"2px"}),
