@@ -454,7 +454,7 @@ def make_layout():
         # ── HEADER ──────────────────────────────────────
         html.Div([
             html.Div([
-                html.Span("QUANT", style={"color":ACCENT,"fontFamily":"Bebas Neue","fontSize":"28px","letterSpacing":"3px"}),
+                html.Span("ELIOTT", style={"color":ACCENT,"fontFamily":"Bebas Neue","fontSize":"28px","letterSpacing":"3px"}),
                 html.Span("DESK", style={"color":RED,"fontFamily":"Bebas Neue","fontSize":"28px","letterSpacing":"3px"}),
                 html.Div(style={"width":"1px","height":"24px","background":BORDER,"margin":"0 16px"}),
                 html.Div("US MEGA-CAP TECH  ·  LIVE DATA", style={"color":BLUE,"fontSize":"10px","letterSpacing":"2px"}),
@@ -485,7 +485,7 @@ def make_layout():
                 html.Button("Portfolio",   id="tab-portfolio",   className="tab",        n_clicks=0),
                 html.Button("Macro",       id="tab-macro",       className="tab",        n_clicks=0),
                 html.Button("Comparison",  id="tab-comparison",  className="tab",        n_clicks=0),
-                html.Button("🎯 Signal",   id="tab-signal",      className="tab",        n_clicks=0),
+                html.Button("Signal",      id="tab-signal",      className="tab",        n_clicks=0),
             ], style={"display":"flex","borderBottom":f"1px solid {BORDER}","marginBottom":"20px","flexWrap":"wrap"}),
 
             # PANELS
@@ -1365,7 +1365,7 @@ def update_portfolio(*slider_vals):
             paper_bgcolor=BG2, plot_bgcolor=BG,
             font=dict(family="IBM Plex Mono, Courier New, monospace", color=TXT, size=11),
             margin=dict(l=55, r=20, t=45, b=40), height=380,
-            title=dict(text="EFFICIENT FRONTIER — YOUR PORTFOLIO (⭐)", font=dict(size=11,color=BLUE), x=0),
+            title=dict(text="EFFICIENT FRONTIER — YOUR PORTFOLIO", font=dict(size=11,color=BLUE), x=0),
             legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
             hovermode="closest",
             xaxis=dict(title="Volatility (%)", gridcolor=BORDER, ticksuffix="%"),
