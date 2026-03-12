@@ -446,16 +446,15 @@ def make_layout():
                 ], style={"display":"flex","justifyContent":"space-between"}),
                 html.Div(f"${m['last_px']:.2f}", style={"color": TXT, "marginTop":"2px", "fontSize":"11px"}),
             ], className="ticker-chip", id={"type":"ticker-chip","index":t},
-              style={"background": BG3 if t == (VALID_TICKERS[2] if len(VALID_TICKERS)>2 else VALID_TICKERS[0]) else "transparent",
-                     "borderColor": ACCENT if t == (VALID_TICKERS[2] if len(VALID_TICKERS)>2 else VALID_TICKERS[0]) else BORDER},
-              n_clicks=0)
+               style={"background":"transparent","borderColor":BORDER},
+               n_clicks=0)
         )
 
     return html.Div([
         # ── HEADER ──────────────────────────────────────
         html.Div([
             html.Div([
-                html.Span("ELIOTT", style={"color":ACCENT,"fontFamily":"Bebas Neue","fontSize":"28px","letterSpacing":"3px"}),
+                html.Span("QUANT", style={"color":ACCENT,"fontFamily":"Bebas Neue","fontSize":"28px","letterSpacing":"3px"}),
                 html.Span("DESK", style={"color":RED,"fontFamily":"Bebas Neue","fontSize":"28px","letterSpacing":"3px"}),
                 html.Div(style={"width":"1px","height":"24px","background":BORDER,"margin":"0 16px"}),
                 html.Div("US MEGA-CAP TECH  ·  LIVE DATA", style={"color":BLUE,"fontSize":"10px","letterSpacing":"2px"}),
@@ -486,7 +485,7 @@ def make_layout():
                 html.Button("Portfolio",   id="tab-portfolio",   className="tab",        n_clicks=0),
                 html.Button("Macro",       id="tab-macro",       className="tab",        n_clicks=0),
                 html.Button("Comparison",  id="tab-comparison",  className="tab",        n_clicks=0),
-                html.Button("Signal",      id="tab-signal",      className="tab",        n_clicks=0),
+                html.Button("🎯 Signal",   id="tab-signal",      className="tab",        n_clicks=0),
             ], style={"display":"flex","borderBottom":f"1px solid {BORDER}","marginBottom":"20px","flexWrap":"wrap"}),
 
             # PANELS
@@ -567,16 +566,6 @@ def update_tab_classes(active):
 def show_panel(active):
     return [{"display":"block"} if t==active else {"display":"none"} for t in TABS]
 
-@app.callback(
-    [Output({"type":"ticker-chip","index":t},"style") for t in VALID_TICKERS],
-    Input("selected-ticker","data")
-)
-def update_chip_styles(selected):
-    return [
-        {"background": BG3, "borderColor": ACCENT} if t == selected
-        else {"background": "transparent", "borderColor": BORDER}
-        for t in VALID_TICKERS
-    ]
 
 # ─────────────────────────────────────────────
 #  HELPERS — plot style
@@ -1201,10 +1190,10 @@ def render_candlestick(ticker):
         )
         fig.update_xaxes(showgrid=True, gridcolor=BORDER, linecolor=BORDER)
         fig.update_yaxes(showgrid=True, gridcolor=BORDER, linecolor=BORDER)
-        fig.update_yaxes(title_text="Price", row=1, col=1)
-        fig.update_yaxes(title_text="Vol",   row=2, col=1)
-        fig.update_yaxes(title_text="RSI",   row=3, col=1, range=[0,100])
-        fig.update_yaxes(title_text="MACD",  row=4, col=1)
+        fig.update_yaxis(title_text="Price", row=1, col=1)
+        fig.update_yaxis(title_text="Vol",   row=2, col=1)
+        fig.update_yaxis(title_text="RSI",   row=3, col=1, range=[0,100])
+        fig.update_yaxis(title_text="MACD",  row=4, col=1)
 
         # Last RSI reading
         last_rsi = float(rsi.iloc[-1])
@@ -1472,17 +1461,14 @@ def render_macro(_ticker):
             )
             charts.append(html.Div([dcc.Graph(figure=fig_s, config={"displayModeBar":False})], className="section"))
 
-           top_charts    = [charts[i] for i in range(len(charts)) if list(MACRO_TICKERS.keys())[i] not in ["CL=F","BTC-USD"]]
-           bottom_charts = [charts[i] for i in range(len(charts)) if list(MACRO_TICKERS.keys())[i] in ["CL=F","BTC-USD"]]
-
         macro_keys = list(MACRO_TICKERS.keys())
-        top_charts = [charts[i] for i in range(len(charts)) if macro_keys[i] not in ["CL=F","BTC-USD"]]
-        bottom_charts = [charts[i] for i in range(len(charts)) if macro_keys[i] in ["CL=F","BTC-USD"]]
+        top_charts = [charts[i] for i in range(len(charts)) if macro_keys[i] not in ["CL=F", "BTC-USD"]]
+        bottom_charts = [charts[i] for i in range(len(charts)) if macro_keys[i] in ["CL=F", "BTC-USD"]]
         chart_grid = html.Div([
             html.Div(top_charts, style={"display":"grid","gridTemplateColumns":f"repeat({len(top_charts)},1fr)","gap":"8px","marginTop":"16px"}),
             html.Div(bottom_charts, style={"display":"grid","gridTemplateColumns":"repeat(2,1fr)","gap":"8px","marginTop":"8px"}),
         ])
-               
+
         return html.Div([
             kpi_grid,
             html.Div(vix_note, style={"color":vix_col,"fontSize":"11px","padding":"10px 16px",
