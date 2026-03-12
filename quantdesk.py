@@ -454,7 +454,7 @@ def make_layout():
         # ── HEADER ──────────────────────────────────────
         html.Div([
             html.Div([
-                html.Span("QUANT", style={"color":ACCENT,"fontFamily":"Bebas Neue","fontSize":"28px","letterSpacing":"3px"}),
+                html.Span("ELIOTT", style={"color":ACCENT,"fontFamily":"Bebas Neue","fontSize":"28px","letterSpacing":"3px"}),
                 html.Span("DESK", style={"color":RED,"fontFamily":"Bebas Neue","fontSize":"28px","letterSpacing":"3px"}),
                 html.Div(style={"width":"1px","height":"24px","background":BORDER,"margin":"0 16px"}),
                 html.Div("US MEGA-CAP TECH  ·  LIVE DATA", style={"color":BLUE,"fontSize":"10px","letterSpacing":"2px"}),
@@ -485,7 +485,7 @@ def make_layout():
                 html.Button("Portfolio",   id="tab-portfolio",   className="tab",        n_clicks=0),
                 html.Button("Macro",       id="tab-macro",       className="tab",        n_clicks=0),
                 html.Button("Comparison",  id="tab-comparison",  className="tab",        n_clicks=0),
-                html.Button("🎯 Signal",   id="tab-signal",      className="tab",        n_clicks=0),
+                html.Button("Signal",   id="tab-signal",      className="tab",        n_clicks=0),
             ], style={"display":"flex","borderBottom":f"1px solid {BORDER}","marginBottom":"20px","flexWrap":"wrap"}),
 
             # PANELS
@@ -1462,12 +1462,7 @@ def render_macro(_ticker):
             charts.append(html.Div([dcc.Graph(figure=fig_s, config={"displayModeBar":False})], className="section"))
 
         macro_keys = list(MACRO_TICKERS.keys())
-        top_charts = [charts[i] for i in range(len(charts)) if macro_keys[i] not in ["CL=F", "BTC-USD"]]
-        bottom_charts = [charts[i] for i in range(len(charts)) if macro_keys[i] in ["CL=F", "BTC-USD"]]
-        chart_grid = html.Div([
-            html.Div(top_charts, style={"display":"grid","gridTemplateColumns":f"repeat({len(top_charts)},1fr)","gap":"8px","marginTop":"16px"}),
-            html.Div(bottom_charts, style={"display":"grid","gridTemplateColumns":"repeat(2,1fr)","gap":"8px","marginTop":"8px"}),
-        ])
+        chart_grid = html.Div(charts, style={"display":"grid","gridTemplateColumns":"repeat(2,1fr)","gap":"8px","marginTop":"16px"})
 
         return html.Div([
             kpi_grid,
