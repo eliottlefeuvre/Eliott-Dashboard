@@ -446,15 +446,15 @@ def make_layout():
                 ], style={"display":"flex","justifyContent":"space-between"}),
                 html.Div(f"${m['last_px']:.2f}", style={"color": TXT, "marginTop":"2px", "fontSize":"11px"}),
             ], className="ticker-chip", id={"type":"ticker-chip","index":t},
-              style={"background": "transparent", "borderColor": BORDER},
-              n_clicks=0)
+               style={"background":"transparent","borderColor":BORDER},
+               n_clicks=0)
         )
 
     return html.Div([
         # ── HEADER ──────────────────────────────────────
         html.Div([
             html.Div([
-                html.Span("ELIOTT", style={"color":ACCENT,"fontFamily":"Bebas Neue","fontSize":"28px","letterSpacing":"3px"}),
+                html.Span("QUANT", style={"color":ACCENT,"fontFamily":"Bebas Neue","fontSize":"28px","letterSpacing":"3px"}),
                 html.Span("DESK", style={"color":RED,"fontFamily":"Bebas Neue","fontSize":"28px","letterSpacing":"3px"}),
                 html.Div(style={"width":"1px","height":"24px","background":BORDER,"margin":"0 16px"}),
                 html.Div("US MEGA-CAP TECH  ·  LIVE DATA", style={"color":BLUE,"fontSize":"10px","letterSpacing":"2px"}),
@@ -485,7 +485,7 @@ def make_layout():
                 html.Button("Portfolio",   id="tab-portfolio",   className="tab",        n_clicks=0),
                 html.Button("Macro",       id="tab-macro",       className="tab",        n_clicks=0),
                 html.Button("Comparison",  id="tab-comparison",  className="tab",        n_clicks=0),
-                html.Button("Signal",   id="tab-signal",      className="tab",        n_clicks=0),
+                html.Button("🎯 Signal",   id="tab-signal",      className="tab",        n_clicks=0),
             ], style={"display":"flex","borderBottom":f"1px solid {BORDER}","marginBottom":"20px","flexWrap":"wrap"}),
 
             # PANELS
@@ -1236,142 +1236,180 @@ def render_candlestick(ticker):
 # ─────────────────────────────────────────────
 @app.callback(
     Output("panel-portfolio","children"),
-    [Input("selected-ticker","data"), Input("portfolio-weights","data")]
+    Input("selected-ticker","data")
 )
-def render_portfolio(ticker, weights):
+def render_portfolio_layout(_ticker):
+    """Render the static shell — sliders + empty results div."""
+    default_w = round(100 / len(VALID_TICKERS), 1)
+    sliders = []
+    for i, t in enumerate(VALID_TICKERS):
+        sliders.append(html.Div([
+            html.Div([
+                html.Span(t, style={"color":COLORS[i],"fontWeight":"600","letterSpacing":"1px","fontSize":"11px"}),
+                html.Span(f"{default_w:.0f}%", id=f"w-label-{t}",
+                          style={"color":TXT,"fontSize":"11px","marginLeft":"8px"}),
+            ], style={"display":"flex","justifyContent":"space-between","marginBottom":"4px"}),
+            dcc.Slider(id=f"slider-{t}", min=0, max=100, step=1, value=default_w,
+                       marks=None, tooltip={"always_visible":False}),
+        ], style={"marginBottom":"12px"}))
+
+    return html.Div([
+        html.Div(id="portfolio-content"),
+        html.Div([
+            html.Div([
+                html.Div("ADJUST WEIGHTS", className="section-title"),
+                html.Div("Sliders update charts in real time", style={"color":DIM,"fontSize":"9px","marginBottom":"16px"}),
+                *sliders,
+            ], className="section", style={"flex":"0 0 260px"}),
+            html.Div(id="portfolio-charts", style={"flex":"1"}),
+        ], style={"display":"flex","gap":"16px"}),
+    ])
+
+
+@app.callback(
+    [Output("portfolio-content","children"),
+     Output("portfolio-charts","children")] + [Output(f"w-label-{t}","children") for t in VALID_TICKERS],
+    [Input(f"slider-{t}","value") for t in VALID_TICKERS],
+)
+def update_portfolio(*slider_vals):
+    """Fires every time any slider moves — recomputes everything."""
     try:
-        if not weights:
-            weights = {t: round(100/len(VALID_TICKERS),1) for t in VALID_TICKERS}
+        weights = {t: (v if v is not None else 0) for t, v in zip(VALID_TICKERS, slider_vals)}
+        total   = sum(weights.values())
+        labels  = [f"{weights[t]:.0f}%" for t in VALID_TICKERS]
+
+        if total == 0:
+            empty = html.Div("Set at least one weight above 0 to see results.",
+                             style={"color":DIM,"padding":"40px","textAlign":"center"})
+            return empty, empty, *labels
 
         result = portfolio_optimize(weights, METRICS)
 
-        sliders = []
-        for i, t in enumerate(VALID_TICKERS):
-            w = weights.get(t, 0)
-            sliders.append(html.Div([
-                html.Div([
-                    html.Span(t, style={"color":COLORS[i],"fontWeight":"600","letterSpacing":"1px","fontSize":"11px"}),
-                    html.Span(f"{w:.0f}%", id=f"w-label-{t}",
-                              style={"color":TXT,"fontSize":"11px","marginLeft":"8px"}),
-                ], style={"display":"flex","justifyContent":"space-between","marginBottom":"4px"}),
-                dcc.Slider(id=f"slider-{t}", min=0, max=100, step=1, value=w,
-                           marks=None, tooltip={"always_visible":False}),
-            ], style={"marginBottom":"12px"}))
+        if not result:
+            empty = html.Div("Not enough data.", style={"color":DIM,"padding":"40px"})
+            return empty, empty, *labels
 
-        if result:
-            # Efficient frontier scatter
-            fig_ef = go.Figure()
-            xs = [p[0] for p in result["frontier"]]
-            ys = [p[1] for p in result["frontier"]]
-            ss = [p[2] for p in result["frontier"]]
-            fig_ef.add_trace(go.Scatter(
-                x=xs, y=ys, mode="markers",
-                marker=dict(color=ss, colorscale=[[0,"#ff1744"],[0.5,YELLOW],[1,"#00c853"]],
-                            size=3, opacity=0.5, showscale=True,
-                            colorbar=dict(title=dict(text="Sharpe",font=dict(color=TXT)),
-                                          tickfont=dict(color=TXT), thickness=10)),
-                name="Simulated Portfolios", hovertemplate="Vol: %{x:.1f}%<br>Ret: %{y:.1f}%<extra></extra>"
-            ))
-            # User portfolio
-            fig_ef.add_trace(go.Scatter(
-                x=[result["vol"]], y=[result["ret"]], mode="markers+text",
-                marker=dict(color=ACCENT, size=14, symbol="star",
-                            line=dict(color=BG, width=1)),
-                text=["YOUR PORTFOLIO"], textposition="top center",
-                textfont=dict(color=ACCENT, size=10),
-                name="Your Portfolio"
-            ))
-            # Max Sharpe
-            fig_ef.add_trace(go.Scatter(
-                x=[result["max_sharpe"]["vol"]], y=[result["max_sharpe"]["ret"]],
-                mode="markers+text",
-                marker=dict(color="#00c853", size=12, symbol="diamond"),
-                text=["MAX SHARPE"], textposition="top right",
-                textfont=dict(color="#00c853", size=10),
-                name="Max Sharpe"
-            ))
-            # Min Variance
-            fig_ef.add_trace(go.Scatter(
-                x=[result["min_var"]["vol"]], y=[result["min_var"]["ret"]],
-                mode="markers+text",
-                marker=dict(color=BLUE, size=12, symbol="diamond"),
-                text=["MIN VARIANCE"], textposition="top right",
-                textfont=dict(color=BLUE, size=10),
-                name="Min Variance"
-            ))
-            fig_ef.update_layout(
-                paper_bgcolor=BG2, plot_bgcolor=BG,
-                font=dict(family="IBM Plex Mono, Courier New, monospace", color=TXT, size=11),
-                margin=dict(l=55, r=20, t=45, b=40), height=380,
-                title=dict(text="EFFICIENT FRONTIER (3,000 RANDOM PORTFOLIOS)", font=dict(size=11,color=BLUE), x=0),
-                legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
-                hovermode="closest",
-                xaxis=dict(title="Volatility (%)", gridcolor=BORDER, ticksuffix="%"),
-                yaxis=dict(title="Return (%)", gridcolor=BORDER, ticksuffix="%"),
-            )
-
-            # Weights bar for max sharpe and min var
-            ms_w = {result["tickers"][i]: round(result["max_sharpe"]["w"][i]*100,1) for i in range(len(result["tickers"]))}
-            mv_w = {result["tickers"][i]: round(result["min_var"]["w"][i]*100,1) for i in range(len(result["tickers"]))}
-
-            fig_wts = go.Figure()
-            fig_wts.add_trace(go.Bar(
-                x=list(ms_w.keys()), y=list(ms_w.values()),
-                name="Max Sharpe", marker_color="#00c853", opacity=0.85,
-            ))
-            fig_wts.add_trace(go.Bar(
-                x=list(mv_w.keys()), y=list(mv_w.values()),
-                name="Min Variance", marker_color=BLUE, opacity=0.85,
-            ))
-            fig_wts.update_layout(
-                paper_bgcolor=BG2, plot_bgcolor=BG,
-                font=dict(family="IBM Plex Mono, Courier New, monospace", color=TXT, size=11),
-                margin=dict(l=55, r=20, t=45, b=40), height=240,
-                title=dict(text="OPTIMAL WEIGHT ALLOCATION", font=dict(size=11,color=BLUE), x=0),
-                barmode="group", legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
-                xaxis=dict(gridcolor=BORDER), yaxis=dict(gridcolor=BORDER, ticksuffix="%"),
-            )
-
-            port_kpis = html.Div([
-                html.Div([html.Div("YOUR PORTFOLIO", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
-                          html.Div(f"{result['ret']:+.1f}%", style={"fontSize":"20px","fontWeight":"600","color":sign_color(result['ret'])}),
-                          html.Div("Ann. Return", style={"color":DIM,"fontSize":"10px","marginTop":"4px"})], className="metric-card"),
-                html.Div([html.Div("VOLATILITY", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
-                          html.Div(f"{result['vol']:.1f}%", style={"fontSize":"20px","fontWeight":"600","color":YELLOW}),
-                          html.Div("Ann. σ", style={"color":DIM,"fontSize":"10px","marginTop":"4px"})], className="metric-card"),
-                html.Div([html.Div("SHARPE", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
-                          html.Div(f"{result['sharpe']:.2f}", style={"fontSize":"20px","fontWeight":"600","color":ACCENT if result['sharpe']>1 else RED}),
-                          html.Div("Ratio", style={"color":DIM,"fontSize":"10px","marginTop":"4px"})], className="metric-card"),
-                html.Div([html.Div("MAX SHARPE WT", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
-                          html.Div(f"{result['max_sharpe']['ret']:+.1f}% / {result['max_sharpe']['vol']:.1f}%",
-                                   style={"fontSize":"14px","fontWeight":"600","color":"#00c853"}),
-                          html.Div("Ret / Vol", style={"color":DIM,"fontSize":"10px","marginTop":"4px"})], className="metric-card"),
-                html.Div([html.Div("MIN VAR WT", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
-                          html.Div(f"{result['min_var']['ret']:+.1f}% / {result['min_var']['vol']:.1f}%",
-                                   style={"fontSize":"14px","fontWeight":"600","color":BLUE}),
-                          html.Div("Ret / Vol", style={"color":DIM,"fontSize":"10px","marginTop":"4px"})], className="metric-card"),
-            ], style={"display":"grid","gridTemplateColumns":"repeat(5,1fr)","gap":"8px","marginBottom":"16px"})
-        else:
-            fig_ef = go.Figure()
-            fig_wts = go.Figure()
-            port_kpis = html.Div()
-
-        return html.Div([
-            port_kpis,
+        # ── KPI cards ──
+        norm_w = {t: weights[t] / total for t in VALID_TICKERS}
+        port_kpis = html.Div([
             html.Div([
-                html.Div([
-                    html.Div("ADJUST WEIGHTS", className="section-title"),
-                    html.Div("(weights are indicative — adjust sliders to explore)", style={"color":DIM,"fontSize":"9px","marginBottom":"16px"}),
-                    *sliders
-                ], className="section", style={"flex":"0 0 260px"}),
-                html.Div([
-                    html.Div([dcc.Graph(figure=fig_ef, config={"displayModeBar":False})], className="section", style={"marginBottom":"16px"}),
-                    html.Div([dcc.Graph(figure=fig_wts, config={"displayModeBar":False})], className="section"),
-                ], style={"flex":"1"}),
-            ], style={"display":"flex","gap":"16px"}),
+                html.Div("YOUR PORTFOLIO", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
+                html.Div(f"{result['ret']:+.1f}%", style={"fontSize":"20px","fontWeight":"600","color":sign_color(result['ret'])}),
+                html.Div("Ann. Return", style={"color":DIM,"fontSize":"10px","marginTop":"4px"}),
+            ], className="metric-card"),
+            html.Div([
+                html.Div("VOLATILITY", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
+                html.Div(f"{result['vol']:.1f}%", style={"fontSize":"20px","fontWeight":"600","color":YELLOW}),
+                html.Div("Ann. σ", style={"color":DIM,"fontSize":"10px","marginTop":"4px"}),
+            ], className="metric-card"),
+            html.Div([
+                html.Div("SHARPE", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
+                html.Div(f"{result['sharpe']:.2f}", style={"fontSize":"20px","fontWeight":"600","color":ACCENT if result['sharpe']>1 else RED}),
+                html.Div("Ratio", style={"color":DIM,"fontSize":"10px","marginTop":"4px"}),
+            ], className="metric-card"),
+            html.Div([
+                html.Div("MAX SHARPE", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
+                html.Div(f"{result['max_sharpe']['ret']:+.1f}% / {result['max_sharpe']['vol']:.1f}%",
+                         style={"fontSize":"14px","fontWeight":"600","color":"#00c853"}),
+                html.Div("Ret / Vol", style={"color":DIM,"fontSize":"10px","marginTop":"4px"}),
+            ], className="metric-card"),
+            html.Div([
+                html.Div("MIN VARIANCE", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
+                html.Div(f"{result['min_var']['ret']:+.1f}% / {result['min_var']['vol']:.1f}%",
+                         style={"fontSize":"14px","fontWeight":"600","color":BLUE}),
+                html.Div("Ret / Vol", style={"color":DIM,"fontSize":"10px","marginTop":"4px"}),
+            ], className="metric-card"),
+            html.Div([
+                html.Div("TOTAL WEIGHT", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
+                html.Div(f"{total:.0f}%", style={"fontSize":"20px","fontWeight":"600",
+                         "color":"#00c853" if 95<=total<=105 else YELLOW}),
+                html.Div("(ideally 100%)", style={"color":DIM,"fontSize":"10px","marginTop":"4px"}),
+            ], className="metric-card"),
+        ], style={"display":"grid","gridTemplateColumns":"repeat(6,1fr)","gap":"8px","marginBottom":"16px"})
+
+        # ── Efficient frontier ──
+        fig_ef = go.Figure()
+        xs = [p[0] for p in result["frontier"]]
+        ys = [p[1] for p in result["frontier"]]
+        ss = [p[2] for p in result["frontier"]]
+        fig_ef.add_trace(go.Scatter(
+            x=xs, y=ys, mode="markers",
+            marker=dict(color=ss, colorscale=[[0,"#ff1744"],[0.5,YELLOW],[1,"#00c853"]],
+                        size=3, opacity=0.5, showscale=True,
+                        colorbar=dict(title=dict(text="Sharpe", font=dict(color=TXT)),
+                                      tickfont=dict(color=TXT), thickness=10)),
+            name="Simulated Portfolios",
+            hovertemplate="Vol: %{x:.1f}%<br>Ret: %{y:.1f}%<extra></extra>"
+        ))
+        fig_ef.add_trace(go.Scatter(
+            x=[result["vol"]], y=[result["ret"]], mode="markers+text",
+            marker=dict(color=ACCENT, size=16, symbol="star", line=dict(color=BG, width=1)),
+            text=["YOUR PORTFOLIO"], textposition="top center",
+            textfont=dict(color=ACCENT, size=10), name="Your Portfolio"
+        ))
+        fig_ef.add_trace(go.Scatter(
+            x=[result["max_sharpe"]["vol"]], y=[result["max_sharpe"]["ret"]],
+            mode="markers+text",
+            marker=dict(color="#00c853", size=12, symbol="diamond"),
+            text=["MAX SHARPE"], textposition="top right",
+            textfont=dict(color="#00c853", size=10), name="Max Sharpe"
+        ))
+        fig_ef.add_trace(go.Scatter(
+            x=[result["min_var"]["vol"]], y=[result["min_var"]["ret"]],
+            mode="markers+text",
+            marker=dict(color=BLUE, size=12, symbol="diamond"),
+            text=["MIN VARIANCE"], textposition="top right",
+            textfont=dict(color=BLUE, size=10), name="Min Variance"
+        ))
+        fig_ef.update_layout(
+            paper_bgcolor=BG2, plot_bgcolor=BG,
+            font=dict(family="IBM Plex Mono, Courier New, monospace", color=TXT, size=11),
+            margin=dict(l=55, r=20, t=45, b=40), height=380,
+            title=dict(text="EFFICIENT FRONTIER — YOUR PORTFOLIO (⭐)", font=dict(size=11,color=BLUE), x=0),
+            legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
+            hovermode="closest",
+            xaxis=dict(title="Volatility (%)", gridcolor=BORDER, ticksuffix="%"),
+            yaxis=dict(title="Return (%)", gridcolor=BORDER, ticksuffix="%"),
+        )
+
+        # ── Weight allocation bars ──
+        ms_w = {result["tickers"][i]: round(result["max_sharpe"]["w"][i]*100,1) for i in range(len(result["tickers"]))}
+        mv_w = {result["tickers"][i]: round(result["min_var"]["w"][i]*100,1) for i in range(len(result["tickers"]))}
+        user_w_norm = {t: round(weights[t]/total*100,1) for t in result["tickers"]}
+
+        fig_wts = go.Figure()
+        fig_wts.add_trace(go.Bar(
+            x=list(user_w_norm.keys()), y=list(user_w_norm.values()),
+            name="Your Weights", marker_color=ACCENT, opacity=0.85,
+        ))
+        fig_wts.add_trace(go.Bar(
+            x=list(ms_w.keys()), y=list(ms_w.values()),
+            name="Max Sharpe", marker_color="#00c853", opacity=0.85,
+        ))
+        fig_wts.add_trace(go.Bar(
+            x=list(mv_w.keys()), y=list(mv_w.values()),
+            name="Min Variance", marker_color=BLUE, opacity=0.85,
+        ))
+        fig_wts.update_layout(
+            paper_bgcolor=BG2, plot_bgcolor=BG,
+            font=dict(family="IBM Plex Mono, Courier New, monospace", color=TXT, size=11),
+            margin=dict(l=55, r=20, t=45, b=40), height=260,
+            title=dict(text="YOUR WEIGHTS vs OPTIMAL ALLOCATIONS", font=dict(size=11,color=BLUE), x=0),
+            barmode="group", legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
+            xaxis=dict(gridcolor=BORDER), yaxis=dict(gridcolor=BORDER, ticksuffix="%"),
+        )
+
+        charts = html.Div([
+            html.Div([dcc.Graph(figure=fig_ef,  config={"displayModeBar":False})], className="section", style={"marginBottom":"16px"}),
+            html.Div([dcc.Graph(figure=fig_wts, config={"displayModeBar":False})], className="section"),
         ])
+
+        return port_kpis, charts, *labels
+
     except Exception as e:
-        return html.Div(f"⚠ Portfolio error: {e}", style={"color":RED,"padding":"40px","fontFamily":"monospace"})
+        err = html.Div(f"⚠ Portfolio error: {e}", style={"color":RED,"padding":"20px","fontFamily":"monospace"})
+        labels = [f"{v:.0f}%" if v else "0%" for v in slider_vals]
+        return err, err, *labels
 
 
 # ─────────────────────────────────────────────
@@ -1461,8 +1499,7 @@ def render_macro(_ticker):
             )
             charts.append(html.Div([dcc.Graph(figure=fig_s, config={"displayModeBar":False})], className="section"))
 
-        macro_keys = list(MACRO_TICKERS.keys())
-        chart_grid = html.Div(charts, style={"display":"grid","gridTemplateColumns":"repeat(2,1fr)","gap":"8px","marginTop":"16px"})
+        chart_grid = html.Div(charts, style={"display":"grid","gridTemplateColumns":"repeat(4,1fr)","gap":"8px","marginTop":"16px"})
 
         return html.Div([
             kpi_grid,
