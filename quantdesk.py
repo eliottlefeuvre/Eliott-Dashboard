@@ -32,9 +32,20 @@ NAMES   = {"AAPL":"Apple","MSFT":"Microsoft","NVDA":"NVIDIA","GOOGL":"Alphabet",
            "AMZN":"Amazon","META":"Meta","TSLA":"Tesla","AVGO":"Broadcom","ORCL":"Oracle","AMD":"AMD"}
 COLORS  = ["#00f5d4","#f72585","#fee440","#4cc9f0","#7bed9f",
            "#ff6b6b","#a29bfe","#fd79a8","#55efc4","#fdcb6e"]
-PERIOD  = "1y"       # history window
-MC_SIMS = 500        # Monte Carlo paths
-MC_DAYS = 63         # ~3 months forecast
+PERIOD  = "1y"
+MC_SIMS = 500
+MC_DAYS = 63
+
+# Macro / commodities tickers
+MACRO_TICKERS = {
+    "^VIX":  "VIX Fear Index",
+    "GC=F":  "Gold",
+    "CL=F":  "Crude Oil",
+    "SI=F":  "Silver",
+    "^TNX":  "10Y Treasury Yield",
+    "DX-Y.NYB": "US Dollar Index",
+    "BTC-USD": "Bitcoin",
+}
 
 BG      = "#040d1a"
 BG2     = "#060f1f"
@@ -42,10 +53,10 @@ BG3     = "#0a1628"
 BORDER  = "#0d2040"
 TXT     = "#c9d4e8"
 DIM     = "#556070"
-ACCENT  = "#00c853"   # green
-RED     = "#ff1744"   # red
-YELLOW  = "#ffab00"   # amber (keeps contrast for neutral metrics)
-BLUE    = "#64b5f6"   # soft blue (for titles/labels)
+ACCENT  = "#00f5d4"
+RED     = "#f72585"
+YELLOW  = "#fee440"
+BLUE    = "#4cc9f0"
 
 def hex_rgba(hex_color, alpha=0.1):
     """Convert '#rrggbb' to 'rgba(r,g,b,alpha)' — required by Plotly 5.x fillcolor."""
@@ -202,6 +213,141 @@ def corr_matrix(metrics):
     return rets.corr()
 
 
+def fetch_macro():
+    """Fetch macro / commodity data."""
+    macro = {}
+    end   = datetime.today()
+    start = end - timedelta(days=400)
+    for sym, name in MACRO_TICKERS.items():
+        try:
+            raw = yf.download(sym, start=start, end=end, auto_adjust=True, progress=False)
+            if isinstance(raw.columns, pd.MultiIndex):
+                raw.columns = raw.columns.get_level_values(0)
+            if "Close" in raw.columns and len(raw) > 5:
+                p = raw["Close"].squeeze().dropna()
+                last  = float(p.iloc[-1])
+                prev  = float(p.iloc[-2])
+                chg   = (last - prev) / prev * 100
+                ytd_start = p[p.index >= pd.Timestamp(f"{datetime.today().year}-01-01")]
+                ytd   = float((last / ytd_start.iloc[0] - 1) * 100) if len(ytd_start) > 0 else 0
+                macro[sym] = {"name": name, "price": last, "chg_1d": chg, "ytd": ytd, "history": p}
+        except Exception:
+            pass
+    return macro
+
+
+def compute_invest_signal(ticker, metrics):
+    """
+    Composite BUY / HOLD / SELL signal combining 8 factors.
+    Returns score 0–100, verdict, and factor breakdown.
+    """
+    m = metrics[ticker]
+    factors = {}
+
+    # 1. Momentum — annualised return vs peers
+    peer_rets = [metrics[t]["ann_ret"] for t in TICKERS if t in metrics]
+    pct_rank  = sum(m["ann_ret"] > r for r in peer_rets) / len(peer_rets)
+    factors["Momentum"]      = round(pct_rank * 100, 1)
+
+    # 2. Risk-adjusted return (Sharpe)
+    sharpe_score = min(100, max(0, (m["sharpe"] + 0.5) / 3.0 * 100))
+    factors["Sharpe Ratio"]  = round(sharpe_score, 1)
+
+    # 3. Drawdown risk (lower is better)
+    dd_score = max(0, 100 + m["max_dd"] * 200)   # max_dd is negative
+    factors["Drawdown Risk"] = round(dd_score, 1)
+
+    # 4. Volatility (lower vol relative to peers = better)
+    peer_vols = [metrics[t]["ann_vol"] for t in TICKERS if t in metrics]
+    vol_rank  = 1 - sum(m["ann_vol"] > v for v in peer_vols) / len(peer_vols)
+    factors["Low Volatility"] = round(vol_rank * 100, 1)
+
+    # 5. Beta — penalise high beta in uncertain markets
+    beta_score = max(0, min(100, (2.5 - m["beta"]) / 2.0 * 100))
+    factors["Beta Score"]    = round(beta_score, 1)
+
+    # 6. VaR efficiency
+    var_score = max(0, min(100, (0.04 + m["var95"]) / 0.04 * 100))
+    factors["VaR Efficiency"] = round(var_score, 1)
+
+    # 7. Sortino (downside protection)
+    sortino_score = min(100, max(0, (m["sortino"] + 0.5) / 3.5 * 100))
+    factors["Sortino"]       = round(sortino_score, 1)
+
+    # 8. Monte Carlo upside — P95/current vs P5/current
+    try:
+        paths  = monte_carlo(m["returns"], m["last_px"])
+        finals = paths[:, -1]
+        p5, p95 = np.percentile(finals, [5, 95])
+        upside   = (p95 / m["last_px"] - 1) * 100
+        downside = (1 - p5 / m["last_px"]) * 100
+        asymmetry = min(100, max(0, upside / (upside + downside + 1e-6) * 100))
+        factors["MC Asymmetry"] = round(asymmetry, 1)
+    except Exception:
+        factors["MC Asymmetry"] = 50.0
+
+    # Weighted composite
+    weights = {
+        "Momentum": 0.18, "Sharpe Ratio": 0.18, "Drawdown Risk": 0.12,
+        "Low Volatility": 0.10, "Beta Score": 0.10, "VaR Efficiency": 0.10,
+        "Sortino": 0.12, "MC Asymmetry": 0.10
+    }
+    score = sum(factors[k] * weights[k] for k in factors)
+
+    if score >= 68:
+        verdict, color = "BUY", "#00c853"
+    elif score >= 42:
+        verdict, color = "HOLD", "#ffab00"
+    else:
+        verdict, color = "SELL", "#ff1744"
+
+    return round(score, 1), verdict, color, factors
+
+
+def portfolio_optimize(weights_pct, metrics):
+    """
+    Given user weight dict {ticker: pct}, compute portfolio stats
+    and also find max-Sharpe and min-variance portfolios.
+    """
+    tickers = [t for t in weights_pct if t in metrics and weights_pct[t] > 0]
+    if not tickers:
+        return None
+    w = np.array([weights_pct[t] / 100 for t in tickers])
+    w = w / w.sum()
+
+    rets_df = pd.DataFrame({t: metrics[t]["pct_rets"] for t in tickers}).dropna()
+    mu_vec  = rets_df.mean().values * 252
+    cov_mat = rets_df.cov().values * 252
+
+    port_ret = float(w @ mu_vec)
+    port_vol = float(np.sqrt(w @ cov_mat @ w))
+    port_sharpe = port_ret / port_vol if port_vol else 0
+
+    # Monte-Carlo frontier
+    n = len(tickers)
+    frontier = []
+    rng = np.random.default_rng(0)
+    for _ in range(3000):
+        rw = rng.dirichlet(np.ones(n))
+        r  = float(rw @ mu_vec)
+        v  = float(np.sqrt(rw @ cov_mat @ rw))
+        s  = r / v if v else 0
+        frontier.append((v * 100, r * 100, s, rw))
+
+    # Max Sharpe
+    best_sharpe = max(frontier, key=lambda x: x[2])
+    # Min Variance
+    best_minvar = min(frontier, key=lambda x: x[0])
+
+    return {
+        "tickers": tickers, "weights": w,
+        "ret": port_ret * 100, "vol": port_vol * 100, "sharpe": port_sharpe,
+        "frontier": frontier,
+        "max_sharpe": {"vol": best_sharpe[0], "ret": best_sharpe[1], "w": best_sharpe[3]},
+        "min_var":    {"vol": best_minvar[0], "ret": best_minvar[1], "w": best_minvar[3]},
+    }
+
+
 # ─────────────────────────────────────────────
 #  INITIAL LOAD
 # ─────────────────────────────────────────────
@@ -225,6 +371,14 @@ for attempt in range(3):
         else:
             print("❌  Could not load data after 3 attempts.")
             raise
+
+print("⬇  Fetching macro / commodity data …")
+try:
+    MACRO = fetch_macro()
+    print(f"✅  Macro loaded — {len(MACRO)} instruments")
+except Exception as e:
+    print(f"⚠  Macro fetch failed: {e}")
+    MACRO = {}
 
 VALID_TICKERS = [t for t in TICKERS if t in METRICS]
 
@@ -261,6 +415,11 @@ app.index_string = """
     .metric-card:hover { border-color: #00f5d4; background: #0a1628; }
     .section { background: #060f1f; border: 1px solid #0d2040; border-radius: 4px; padding: 16px; }
     .section-title { color: #4cc9f0; font-size: 11px; letter-spacing: 2px; margin-bottom: 12px; }
+    input[type=range] { -webkit-appearance:none; width:100%; height:4px; background:#0d2040; border-radius:2px; outline:none; }
+    input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:#00f5d4; cursor:pointer; }
+    .signal-buy  { color:#00c853; font-weight:600; }
+    .signal-hold { color:#ffab00; font-weight:600; }
+    .signal-sell { color:#ff1744; font-weight:600; }
   </style>
 </head>
 <body>
@@ -318,25 +477,34 @@ def make_layout():
         html.Div([
             # TAB BAR
             html.Div([
-                html.Button("Overview",   id="tab-overview",   className="tab active", n_clicks=0),
-                html.Button("Monte Carlo",id="tab-montecarlo", className="tab",        n_clicks=0),
-                html.Button("Correlation",id="tab-correlation",className="tab",        n_clicks=0),
-                html.Button("Risk",       id="tab-risk",       className="tab",        n_clicks=0),
-                html.Button("Comparison", id="tab-comparison", className="tab",        n_clicks=0),
-            ], style={"display":"flex","borderBottom":f"1px solid {BORDER}","marginBottom":"20px"}),
+                html.Button("Overview",    id="tab-overview",    className="tab active", n_clicks=0),
+                html.Button("Candlestick", id="tab-candlestick", className="tab",        n_clicks=0),
+                html.Button("Monte Carlo", id="tab-montecarlo",  className="tab",        n_clicks=0),
+                html.Button("Correlation", id="tab-correlation", className="tab",        n_clicks=0),
+                html.Button("Risk",        id="tab-risk",        className="tab",        n_clicks=0),
+                html.Button("Portfolio",   id="tab-portfolio",   className="tab",        n_clicks=0),
+                html.Button("Macro",       id="tab-macro",       className="tab",        n_clicks=0),
+                html.Button("Comparison",  id="tab-comparison",  className="tab",        n_clicks=0),
+                html.Button("Signal",      id="tab-signal",      className="tab",        n_clicks=0),
+            ], style={"display":"flex","borderBottom":f"1px solid {BORDER}","marginBottom":"20px","flexWrap":"wrap"}),
 
             # PANELS
             html.Div(id="panel-overview"),
+            html.Div(id="panel-candlestick", style={"display":"none"}),
             html.Div(id="panel-montecarlo",  style={"display":"none"}),
             html.Div(id="panel-correlation", style={"display":"none"}),
             html.Div(id="panel-risk",        style={"display":"none"}),
+            html.Div(id="panel-portfolio",   style={"display":"none"}),
+            html.Div(id="panel-macro",       style={"display":"none"}),
             html.Div(id="panel-comparison",  style={"display":"none"}),
+            html.Div(id="panel-signal",      style={"display":"none"}),
 
         ], style={"padding":"16px 24px"}),
 
         # Hidden state stores
         dcc.Store(id="selected-ticker", data=VALID_TICKERS[2] if len(VALID_TICKERS)>2 else VALID_TICKERS[0]),
         dcc.Store(id="active-tab", data="overview"),
+        dcc.Store(id="portfolio-weights", data={t: round(100/len(VALID_TICKERS),1) for t in VALID_TICKERS}),
 
         # Footer
         html.Div([
@@ -371,7 +539,7 @@ def select_ticker(*args):
 # ─────────────────────────────────────────────
 #  CALLBACKS — tab switching
 # ─────────────────────────────────────────────
-TABS = ["overview","montecarlo","correlation","risk","comparison"]
+TABS = ["overview","candlestick","montecarlo","correlation","risk","portfolio","macro","comparison","signal"]
 
 @app.callback(
     Output("active-tab","data"),
@@ -921,6 +1089,493 @@ def render_comparison(ticker):
             html.Div([dcc.Graph(figure=fig_cap, config={"displayModeBar":False})], className="section"),
         ], style={"display":"grid","gridTemplateColumns":"1fr 1fr","gap":"16px"}),
     ])
+
+
+# ─────────────────────────────────────────────
+#  PANEL — CANDLESTICK + INDICATORS
+# ─────────────────────────────────────────────
+@app.callback(Output("panel-candlestick","children"), Input("selected-ticker","data"))
+def render_candlestick(ticker):
+    try:
+        col = COLORS[TICKERS.index(ticker)]
+        end   = datetime.today()
+        start = end - timedelta(days=400)
+        raw = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
+        if isinstance(raw.columns, pd.MultiIndex):
+            raw.columns = raw.columns.get_level_values(0)
+        raw = raw.dropna()
+
+        o = raw["Open"].squeeze()
+        h = raw["High"].squeeze()
+        l = raw["Low"].squeeze()
+        c = raw["Close"].squeeze()
+        v = raw["Volume"].squeeze() if "Volume" in raw.columns else None
+
+        # ── Indicators ──
+        ema20  = c.ewm(span=20).mean()
+        ema50  = c.ewm(span=50).mean()
+        bb_mid = c.rolling(20).mean()
+        bb_std = c.rolling(20).std()
+        bb_up  = bb_mid + 2 * bb_std
+        bb_dn  = bb_mid - 2 * bb_std
+
+        delta  = c.diff()
+        gain   = delta.clip(lower=0).rolling(14).mean()
+        loss   = (-delta.clip(upper=0)).rolling(14).mean()
+        rs     = gain / (loss + 1e-10)
+        rsi    = 100 - 100 / (1 + rs)
+
+        ema12  = c.ewm(span=12).mean()
+        ema26  = c.ewm(span=26).mean()
+        macd_line   = ema12 - ema26
+        macd_signal = macd_line.ewm(span=9).mean()
+        macd_hist   = macd_line - macd_signal
+
+        fig = make_subplots(
+            rows=4, cols=1, shared_xaxes=True,
+            row_heights=[0.50, 0.18, 0.16, 0.16],
+            vertical_spacing=0.02,
+        )
+
+        # Candlestick
+        fig.add_trace(go.Candlestick(
+            x=raw.index, open=o, high=h, low=l, close=c,
+            increasing_line_color="#00c853", decreasing_line_color="#ff1744",
+            increasing_fillcolor="#00c853", decreasing_fillcolor="#ff1744",
+            name="OHLC", showlegend=False,
+        ), row=1, col=1)
+
+        # Bollinger Bands
+        fig.add_trace(go.Scatter(x=list(bb_up.index), y=list(bb_up.values), mode="lines",
+            line=dict(color=YELLOW, width=0.8, dash="dot"), name="BB Upper", showlegend=False), row=1, col=1)
+        fig.add_trace(go.Scatter(x=list(bb_dn.index), y=list(bb_dn.values), mode="lines",
+            line=dict(color=YELLOW, width=0.8, dash="dot"), name="BB Lower",
+            fill="tonexty", fillcolor=hex_rgba(YELLOW, 0.04), showlegend=False), row=1, col=1)
+        fig.add_trace(go.Scatter(x=list(ema20.index), y=list(ema20.values), mode="lines",
+            line=dict(color=ACCENT, width=1.2), name="EMA20", showlegend=True), row=1, col=1)
+        fig.add_trace(go.Scatter(x=list(ema50.index), y=list(ema50.values), mode="lines",
+            line=dict(color=BLUE, width=1.2), name="EMA50", showlegend=True), row=1, col=1)
+
+        # Volume
+        if v is not None:
+            colors_v = [hex_rgba("#00c853", 0.6) if c.iloc[i] >= o.iloc[i] else hex_rgba("#ff1744", 0.6)
+                        for i in range(len(c))]
+            fig.add_trace(go.Bar(x=list(v.index), y=list(v.values),
+                marker_color=colors_v, name="Volume", showlegend=False), row=2, col=1)
+
+        # RSI
+        fig.add_trace(go.Scatter(x=list(rsi.index), y=list(rsi.values), mode="lines",
+            line=dict(color=col, width=1.2), name="RSI", showlegend=False), row=3, col=1)
+        fig.add_hline(y=70, line_color="#ff1744", line_dash="dot", line_width=0.8, row=3, col=1)
+        fig.add_hline(y=30, line_color="#00c853", line_dash="dot", line_width=0.8, row=3, col=1)
+
+        # MACD
+        fig.add_trace(go.Scatter(x=list(macd_line.index), y=list(macd_line.values), mode="lines",
+            line=dict(color=ACCENT, width=1.2), name="MACD", showlegend=False), row=4, col=1)
+        fig.add_trace(go.Scatter(x=list(macd_signal.index), y=list(macd_signal.values), mode="lines",
+            line=dict(color=YELLOW, width=1.2), name="Signal", showlegend=False), row=4, col=1)
+        hist_colors = [hex_rgba("#00c853", 0.7) if v >= 0 else hex_rgba("#ff1744", 0.7)
+                       for v in macd_hist.values]
+        fig.add_trace(go.Bar(x=list(macd_hist.index), y=list(macd_hist.values),
+            marker_color=hist_colors, name="Histogram", showlegend=False), row=4, col=1)
+
+        fig.update_layout(
+            paper_bgcolor=BG2, plot_bgcolor=BG,
+            font=dict(family="IBM Plex Mono, Courier New, monospace", color=TXT, size=11),
+            margin=dict(l=55, r=20, t=45, b=40), height=700,
+            title=dict(text=f"CANDLESTICK + INDICATORS — {ticker}", font=dict(size=11, color=BLUE), x=0),
+            legend=dict(bgcolor="rgba(0,0,0,0)", orientation="h", x=0, y=1.01, font=dict(size=10)),
+            xaxis_rangeslider_visible=False,
+            hovermode="x unified",
+        )
+        fig.update_xaxes(showgrid=True, gridcolor=BORDER, linecolor=BORDER)
+        fig.update_yaxes(showgrid=True, gridcolor=BORDER, linecolor=BORDER)
+        fig.update_yaxes(title_text="Price", row=1, col=1)
+        fig.update_yaxes(title_text="Vol",   row=2, col=1)
+        fig.update_yaxes(title_text="RSI",   row=3, col=1, range=[0,100])
+        fig.update_yaxes(title_text="MACD",  row=4, col=1)
+
+        # Last RSI reading
+        last_rsi = float(rsi.iloc[-1])
+        rsi_txt  = "OVERBOUGHT" if last_rsi > 70 else "OVERSOLD" if last_rsi < 30 else "NEUTRAL"
+        rsi_col  = "#ff1744" if last_rsi > 70 else "#00c853" if last_rsi < 30 else YELLOW
+
+        last_macd = float(macd_line.iloc[-1])
+        macd_txt  = "BULLISH" if last_macd > 0 else "BEARISH"
+        macd_col  = "#00c853" if last_macd > 0 else "#ff1744"
+
+        ema_cross = "ABOVE EMA50 ✓" if float(c.iloc[-1]) > float(ema50.iloc[-1]) else "BELOW EMA50 ✗"
+        ema_col   = "#00c853" if float(c.iloc[-1]) > float(ema50.iloc[-1]) else "#ff1744"
+
+        info_bar = html.Div([
+            html.Div([html.Div("RSI(14)", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"4px"}),
+                      html.Div(f"{last_rsi:.1f} — {rsi_txt}", style={"color":rsi_col,"fontWeight":"600"})],
+                     className="metric-card"),
+            html.Div([html.Div("MACD", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"4px"}),
+                      html.Div(f"{last_macd:.3f} — {macd_txt}", style={"color":macd_col,"fontWeight":"600"})],
+                     className="metric-card"),
+            html.Div([html.Div("EMA TREND", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"4px"}),
+                      html.Div(ema_cross, style={"color":ema_col,"fontWeight":"600"})],
+                     className="metric-card"),
+            html.Div([html.Div("BB WIDTH", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"4px"}),
+                      html.Div(f"{float((bb_up.iloc[-1]-bb_dn.iloc[-1])/bb_mid.iloc[-1]*100):.1f}% — {'WIDE' if (bb_up.iloc[-1]-bb_dn.iloc[-1])/bb_mid.iloc[-1]>0.1 else 'TIGHT'}",
+                               style={"color":YELLOW,"fontWeight":"600"})],
+                     className="metric-card"),
+        ], style={"display":"grid","gridTemplateColumns":"repeat(4,1fr)","gap":"8px","marginBottom":"16px"})
+
+        return html.Div([
+            info_bar,
+            html.Div([dcc.Graph(figure=fig, config={"displayModeBar":False})], className="section"),
+        ])
+    except Exception as e:
+        return html.Div(f"⚠ Candlestick error: {e}", style={"color":RED,"padding":"40px","fontFamily":"monospace"})
+
+
+# ─────────────────────────────────────────────
+#  PANEL — PORTFOLIO BUILDER
+# ─────────────────────────────────────────────
+@app.callback(
+    Output("panel-portfolio","children"),
+    [Input("selected-ticker","data"), Input("portfolio-weights","data")]
+)
+def render_portfolio(ticker, weights):
+    try:
+        if not weights:
+            weights = {t: round(100/len(VALID_TICKERS),1) for t in VALID_TICKERS}
+
+        result = portfolio_optimize(weights, METRICS)
+
+        sliders = []
+        for i, t in enumerate(VALID_TICKERS):
+            w = weights.get(t, 0)
+            sliders.append(html.Div([
+                html.Div([
+                    html.Span(t, style={"color":COLORS[i],"fontWeight":"600","letterSpacing":"1px","fontSize":"11px"}),
+                    html.Span(f"{w:.0f}%", id=f"w-label-{t}",
+                              style={"color":TXT,"fontSize":"11px","marginLeft":"8px"}),
+                ], style={"display":"flex","justifyContent":"space-between","marginBottom":"4px"}),
+                dcc.Slider(id=f"slider-{t}", min=0, max=100, step=1, value=w,
+                           marks=None, tooltip={"always_visible":False}),
+            ], style={"marginBottom":"12px"}))
+
+        if result:
+            # Efficient frontier scatter
+            fig_ef = go.Figure()
+            xs = [p[0] for p in result["frontier"]]
+            ys = [p[1] for p in result["frontier"]]
+            ss = [p[2] for p in result["frontier"]]
+            fig_ef.add_trace(go.Scatter(
+                x=xs, y=ys, mode="markers",
+                marker=dict(color=ss, colorscale=[[0,"#ff1744"],[0.5,YELLOW],[1,"#00c853"]],
+                            size=3, opacity=0.5, showscale=True,
+                            colorbar=dict(title=dict(text="Sharpe",font=dict(color=TXT)),
+                                          tickfont=dict(color=TXT), thickness=10)),
+                name="Simulated Portfolios", hovertemplate="Vol: %{x:.1f}%<br>Ret: %{y:.1f}%<extra></extra>"
+            ))
+            # User portfolio
+            fig_ef.add_trace(go.Scatter(
+                x=[result["vol"]], y=[result["ret"]], mode="markers+text",
+                marker=dict(color=ACCENT, size=14, symbol="star",
+                            line=dict(color=BG, width=1)),
+                text=["YOUR PORTFOLIO"], textposition="top center",
+                textfont=dict(color=ACCENT, size=10),
+                name="Your Portfolio"
+            ))
+            # Max Sharpe
+            fig_ef.add_trace(go.Scatter(
+                x=[result["max_sharpe"]["vol"]], y=[result["max_sharpe"]["ret"]],
+                mode="markers+text",
+                marker=dict(color="#00c853", size=12, symbol="diamond"),
+                text=["MAX SHARPE"], textposition="top right",
+                textfont=dict(color="#00c853", size=10),
+                name="Max Sharpe"
+            ))
+            # Min Variance
+            fig_ef.add_trace(go.Scatter(
+                x=[result["min_var"]["vol"]], y=[result["min_var"]["ret"]],
+                mode="markers+text",
+                marker=dict(color=BLUE, size=12, symbol="diamond"),
+                text=["MIN VARIANCE"], textposition="top right",
+                textfont=dict(color=BLUE, size=10),
+                name="Min Variance"
+            ))
+            fig_ef.update_layout(
+                paper_bgcolor=BG2, plot_bgcolor=BG,
+                font=dict(family="IBM Plex Mono, Courier New, monospace", color=TXT, size=11),
+                margin=dict(l=55, r=20, t=45, b=40), height=380,
+                title=dict(text="EFFICIENT FRONTIER (3,000 RANDOM PORTFOLIOS)", font=dict(size=11,color=BLUE), x=0),
+                legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
+                hovermode="closest",
+                xaxis=dict(title="Volatility (%)", gridcolor=BORDER, ticksuffix="%"),
+                yaxis=dict(title="Return (%)", gridcolor=BORDER, ticksuffix="%"),
+            )
+
+            # Weights bar for max sharpe and min var
+            ms_w = {result["tickers"][i]: round(result["max_sharpe"]["w"][i]*100,1) for i in range(len(result["tickers"]))}
+            mv_w = {result["tickers"][i]: round(result["min_var"]["w"][i]*100,1) for i in range(len(result["tickers"]))}
+
+            fig_wts = go.Figure()
+            fig_wts.add_trace(go.Bar(
+                x=list(ms_w.keys()), y=list(ms_w.values()),
+                name="Max Sharpe", marker_color="#00c853", opacity=0.85,
+            ))
+            fig_wts.add_trace(go.Bar(
+                x=list(mv_w.keys()), y=list(mv_w.values()),
+                name="Min Variance", marker_color=BLUE, opacity=0.85,
+            ))
+            fig_wts.update_layout(
+                paper_bgcolor=BG2, plot_bgcolor=BG,
+                font=dict(family="IBM Plex Mono, Courier New, monospace", color=TXT, size=11),
+                margin=dict(l=55, r=20, t=45, b=40), height=240,
+                title=dict(text="OPTIMAL WEIGHT ALLOCATION", font=dict(size=11,color=BLUE), x=0),
+                barmode="group", legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
+                xaxis=dict(gridcolor=BORDER), yaxis=dict(gridcolor=BORDER, ticksuffix="%"),
+            )
+
+            port_kpis = html.Div([
+                html.Div([html.Div("YOUR PORTFOLIO", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
+                          html.Div(f"{result['ret']:+.1f}%", style={"fontSize":"20px","fontWeight":"600","color":sign_color(result['ret'])}),
+                          html.Div("Ann. Return", style={"color":DIM,"fontSize":"10px","marginTop":"4px"})], className="metric-card"),
+                html.Div([html.Div("VOLATILITY", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
+                          html.Div(f"{result['vol']:.1f}%", style={"fontSize":"20px","fontWeight":"600","color":YELLOW}),
+                          html.Div("Ann. σ", style={"color":DIM,"fontSize":"10px","marginTop":"4px"})], className="metric-card"),
+                html.Div([html.Div("SHARPE", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
+                          html.Div(f"{result['sharpe']:.2f}", style={"fontSize":"20px","fontWeight":"600","color":ACCENT if result['sharpe']>1 else RED}),
+                          html.Div("Ratio", style={"color":DIM,"fontSize":"10px","marginTop":"4px"})], className="metric-card"),
+                html.Div([html.Div("MAX SHARPE WT", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
+                          html.Div(f"{result['max_sharpe']['ret']:+.1f}% / {result['max_sharpe']['vol']:.1f}%",
+                                   style={"fontSize":"14px","fontWeight":"600","color":"#00c853"}),
+                          html.Div("Ret / Vol", style={"color":DIM,"fontSize":"10px","marginTop":"4px"})], className="metric-card"),
+                html.Div([html.Div("MIN VAR WT", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
+                          html.Div(f"{result['min_var']['ret']:+.1f}% / {result['min_var']['vol']:.1f}%",
+                                   style={"fontSize":"14px","fontWeight":"600","color":BLUE}),
+                          html.Div("Ret / Vol", style={"color":DIM,"fontSize":"10px","marginTop":"4px"})], className="metric-card"),
+            ], style={"display":"grid","gridTemplateColumns":"repeat(5,1fr)","gap":"8px","marginBottom":"16px"})
+        else:
+            fig_ef = go.Figure()
+            fig_wts = go.Figure()
+            port_kpis = html.Div()
+
+        return html.Div([
+            port_kpis,
+            html.Div([
+                html.Div([
+                    html.Div("ADJUST WEIGHTS", className="section-title"),
+                    html.Div("(weights are indicative — adjust sliders to explore)", style={"color":DIM,"fontSize":"9px","marginBottom":"16px"}),
+                    *sliders
+                ], className="section", style={"flex":"0 0 260px"}),
+                html.Div([
+                    html.Div([dcc.Graph(figure=fig_ef, config={"displayModeBar":False})], className="section", style={"marginBottom":"16px"}),
+                    html.Div([dcc.Graph(figure=fig_wts, config={"displayModeBar":False})], className="section"),
+                ], style={"flex":"1"}),
+            ], style={"display":"flex","gap":"16px"}),
+        ])
+    except Exception as e:
+        return html.Div(f"⚠ Portfolio error: {e}", style={"color":RED,"padding":"40px","fontFamily":"monospace"})
+
+
+# ─────────────────────────────────────────────
+#  PANEL — MACRO & COMMODITIES
+# ─────────────────────────────────────────────
+@app.callback(Output("panel-macro","children"), Input("selected-ticker","data"))
+def render_macro(_ticker):
+    try:
+        if not MACRO:
+            return html.Div("⚠ No macro data available. Check your internet connection.",
+                            style={"color":YELLOW,"padding":"40px","fontFamily":"monospace"})
+
+        # KPI cards for each macro instrument
+        macro_cards = []
+        for sym, d in MACRO.items():
+            chg_col = "#00c853" if d["chg_1d"] >= 0 else "#ff1744"
+            ytd_col = "#00c853" if d["ytd"] >= 0 else "#ff1744"
+            macro_cards.append(html.Div([
+                html.Div(d["name"], style={"color":DIM,"fontSize":"9px","letterSpacing":"1px","marginBottom":"4px"}),
+                html.Div(f"{d['price']:.2f}", style={"fontSize":"18px","fontWeight":"600","color":TXT,"lineHeight":"1"}),
+                html.Div([
+                    html.Span(f"{d['chg_1d']:+.2f}% 1D", style={"color":chg_col,"fontSize":"10px","marginRight":"8px"}),
+                    html.Span(f"{d['ytd']:+.1f}% YTD", style={"color":ytd_col,"fontSize":"10px"}),
+                ], style={"marginTop":"4px"}),
+            ], className="metric-card"))
+
+        kpi_grid = html.Div(macro_cards,
+                            style={"display":"grid","gridTemplateColumns":"repeat(4,1fr)","gap":"8px","marginBottom":"16px"})
+
+        # Macro history chart
+        fig_macro = go.Figure()
+        macro_colors_list = [ACCENT, YELLOW, RED, BLUE, "#00c853", "#a29bfe", "#fd79a8"]
+        for idx, (sym, d) in enumerate(MACRO.items()):
+            p = d["history"]
+            norm = (p / p.iloc[0] - 1) * 100
+            fig_macro.add_trace(go.Scatter(
+                x=list(norm.index), y=list(norm.values), mode="lines",
+                line=dict(color=macro_colors_list[idx % len(macro_colors_list)], width=1.5),
+                name=d["name"],
+                hovertemplate=f"%{{y:+.2f}}%<extra>{d['name']}</extra>"
+            ))
+        fig_macro.add_hline(y=0, line_color=DIM, line_dash="dot", line_width=1)
+        fig_macro.update_layout(
+            paper_bgcolor=BG2, plot_bgcolor=BG,
+            font=dict(family="IBM Plex Mono, Courier New, monospace", color=TXT, size=11),
+            margin=dict(l=55, r=20, t=45, b=40), height=320,
+            title=dict(text="MACRO INSTRUMENTS — NORMALISED RETURN (1Y)", font=dict(size=11,color=BLUE), x=0),
+            legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
+            hovermode="x unified",
+            xaxis=dict(gridcolor=BORDER), yaxis=dict(gridcolor=BORDER, ticksuffix="%"),
+        )
+
+        # VIX vs Tech correlation note
+        vix_note = ""
+        if "^VIX" in MACRO:
+            vix_val = MACRO["^VIX"]["price"]
+            if vix_val > 30:
+                vix_note = f"⚠ VIX at {vix_val:.1f} — HIGH FEAR. Equity risk elevated."
+                vix_col  = "#ff1744"
+            elif vix_val > 20:
+                vix_note = f"◈ VIX at {vix_val:.1f} — MODERATE volatility regime."
+                vix_col  = YELLOW
+            else:
+                vix_note = f"✓ VIX at {vix_val:.1f} — LOW fear. Risk-on environment."
+                vix_col  = "#00c853"
+        else:
+            vix_note, vix_col = "", DIM
+
+        # Individual macro charts
+        charts = []
+        for sym, d in MACRO.items():
+            p = d["history"]
+            fig_s = go.Figure(go.Scatter(
+                x=list(p.index), y=list(p.values), mode="lines",
+                line=dict(color=macro_colors_list[list(MACRO.keys()).index(sym) % len(macro_colors_list)], width=1.5),
+                fill="tozeroy", fillcolor=hex_rgba(macro_colors_list[list(MACRO.keys()).index(sym) % len(macro_colors_list)], 0.08),
+                hovertemplate="%{y:.2f}<extra></extra>"
+            ))
+            fig_s.update_layout(
+                paper_bgcolor=BG2, plot_bgcolor=BG,
+                font=dict(family="IBM Plex Mono, Courier New, monospace", color=TXT, size=10),
+                margin=dict(l=40, r=8, t=30, b=30), height=160,
+                title=dict(text=d["name"], font=dict(size=10,color=BLUE), x=0),
+                showlegend=False, hovermode="x unified",
+                xaxis=dict(gridcolor=BORDER, showticklabels=False),
+                yaxis=dict(gridcolor=BORDER),
+            )
+            charts.append(html.Div([dcc.Graph(figure=fig_s, config={"displayModeBar":False})], className="section"))
+
+        chart_grid = html.Div(charts, style={"display":"grid","gridTemplateColumns":"repeat(4,1fr)","gap":"8px","marginTop":"16px"})
+
+        return html.Div([
+            kpi_grid,
+            html.Div(vix_note, style={"color":vix_col,"fontSize":"11px","padding":"10px 16px",
+                                       "background":BG2,"border":f"1px solid {BORDER}","borderRadius":"4px",
+                                       "marginBottom":"16px","letterSpacing":"1px"}) if vix_note else html.Div(),
+            html.Div([dcc.Graph(figure=fig_macro, config={"displayModeBar":False})], className="section"),
+            chart_grid,
+        ])
+    except Exception as e:
+        return html.Div(f"⚠ Macro error: {e}", style={"color":RED,"padding":"40px","fontFamily":"monospace"})
+
+
+# ─────────────────────────────────────────────
+#  PANEL — INVEST SIGNAL
+# ─────────────────────────────────────────────
+@app.callback(Output("panel-signal","children"), Input("selected-ticker","data"))
+def render_signal(ticker):
+    try:
+        score, verdict, v_color, factors = compute_invest_signal(ticker, METRICS)
+        m = METRICS[ticker]
+
+        # Big signal card
+        signal_card = html.Div([
+            html.Div(f"{NAMES.get(ticker, ticker)} ({ticker})",
+                     style={"color":DIM,"fontSize":"10px","letterSpacing":"2px","marginBottom":"8px"}),
+            html.Div(verdict,
+                     style={"fontSize":"52px","fontWeight":"600","color":v_color,
+                            "letterSpacing":"6px","lineHeight":"1","fontFamily":"Bebas Neue"}),
+            html.Div(f"Composite Score: {score}/100",
+                     style={"color":TXT,"fontSize":"13px","marginTop":"8px"}),
+            # Score bar
+            html.Div(style={"marginTop":"12px","height":"6px","background":BORDER,"borderRadius":"3px"},
+                     children=[html.Div(style={"width":f"{score}%","height":"100%",
+                                               "background":v_color,"borderRadius":"3px",
+                                               "transition":"width 0.5s"})]),
+            html.Div([
+                html.Span("0", style={"color":DIM,"fontSize":"9px"}),
+                html.Span("SELL < 42 | 42 ≤ HOLD < 68 | BUY ≥ 68", style={"color":DIM,"fontSize":"9px"}),
+                html.Span("100", style={"color":DIM,"fontSize":"9px"}),
+            ], style={"display":"flex","justifyContent":"space-between","marginTop":"4px"}),
+        ], style={"background":BG3,"border":f"2px solid {v_color}","borderRadius":"6px",
+                  "padding":"24px 32px","textAlign":"center","marginBottom":"20px"})
+
+        # Factor breakdown
+        factor_cards = []
+        for fname, fscore in factors.items():
+            fc = "#00c853" if fscore >= 65 else YELLOW if fscore >= 40 else "#ff1744"
+            factor_cards.append(html.Div([
+                html.Div(fname.upper(), style={"color":DIM,"fontSize":"9px","letterSpacing":"1px","marginBottom":"6px"}),
+                html.Div(f"{fscore:.0f}", style={"fontSize":"22px","fontWeight":"600","color":fc,"lineHeight":"1"}),
+                html.Div(style={"marginTop":"6px","height":"3px","background":BORDER,"borderRadius":"2px"},
+                         children=[html.Div(style={"width":f"{fscore}%","height":"100%",
+                                                   "background":fc,"borderRadius":"2px"})]),
+                html.Div("/100", style={"color":DIM,"fontSize":"9px","marginTop":"3px"}),
+            ], className="metric-card", style={"textAlign":"center"}))
+
+        factor_grid = html.Div(factor_cards,
+                               style={"display":"grid","gridTemplateColumns":"repeat(4,1fr)","gap":"8px","marginBottom":"20px"})
+
+        # All tickers signal comparison
+        all_signals = []
+        for t in VALID_TICKERS:
+            try:
+                s, v, vc, _ = compute_invest_signal(t, METRICS)
+                all_signals.append((t, s, v, vc))
+            except Exception:
+                pass
+        all_signals.sort(key=lambda x: -x[1])
+
+        fig_sig = go.Figure(go.Bar(
+            x=[x[0] for x in all_signals],
+            y=[x[1] for x in all_signals],
+            marker_color=[x[3] for x in all_signals],
+            text=[x[2] for x in all_signals],
+            textposition="outside",
+            hovertemplate="%{x}: %{y:.1f}<extra>Signal Score</extra>"
+        ))
+        fig_sig.add_hline(y=68, line_color="#00c853", line_dash="dash", line_width=1,
+                          annotation_text="BUY threshold", annotation_font=dict(color="#00c853", size=9))
+        fig_sig.add_hline(y=42, line_color="#ff1744", line_dash="dash", line_width=1,
+                          annotation_text="SELL threshold", annotation_font=dict(color="#ff1744", size=9))
+        fig_sig.update_layout(
+            paper_bgcolor=BG2, plot_bgcolor=BG,
+            font=dict(family="IBM Plex Mono, Courier New, monospace", color=TXT, size=11),
+            margin=dict(l=55, r=20, t=45, b=40), height=280,
+            title=dict(text="COMPOSITE INVEST SIGNAL — ALL TICKERS", font=dict(size=11,color=BLUE), x=0),
+            xaxis=dict(gridcolor=BORDER), yaxis=dict(gridcolor=BORDER, range=[0,110]),
+            showlegend=False,
+        )
+
+        # Methodology note
+        method_note = html.Div([
+            html.Div("SIGNAL METHODOLOGY", style={"color":BLUE,"fontSize":"9px","letterSpacing":"2px","marginBottom":"8px"}),
+            html.Div([
+                html.Span("8 factors weighted: ", style={"color":DIM}),
+                html.Span("Momentum (18%) · Sharpe (18%) · Sortino (12%) · Drawdown (12%) · "
+                          "Beta (10%) · VaR (10%) · Volatility (10%) · MC Asymmetry (10%)",
+                          style={"color":TXT}),
+            ], style={"fontSize":"10px","lineHeight":"1.8"}),
+            html.Div("⚠  This is a quantitative model for educational purposes only. "
+                     "It does not constitute financial advice.",
+                     style={"color":DIM,"fontSize":"9px","marginTop":"8px","fontStyle":"italic"}),
+        ], style={"background":BG3,"border":f"1px solid {BORDER}","borderRadius":"4px",
+                  "padding":"12px 16px","marginTop":"16px"})
+
+        return html.Div([
+            signal_card,
+            factor_grid,
+            html.Div([dcc.Graph(figure=fig_sig, config={"displayModeBar":False})], className="section"),
+            method_note,
+        ])
+    except Exception as e:
+        return html.Div(f"⚠ Signal error: {e}", style={"color":RED,"padding":"40px","fontFamily":"monospace"})
 
 
 # ─────────────────────────────────────────────
