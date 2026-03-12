@@ -446,8 +446,9 @@ def make_layout():
                 ], style={"display":"flex","justifyContent":"space-between"}),
                 html.Div(f"${m['last_px']:.2f}", style={"color": TXT, "marginTop":"2px", "fontSize":"11px"}),
             ], className="ticker-chip", id={"type":"ticker-chip","index":t},
-               style={"background":"transparent","borderColor":BORDER},
-               n_clicks=0)
+              style={"background": BG3 if t == (VALID_TICKERS[2] if len(VALID_TICKERS)>2 else VALID_TICKERS[0]) else "transparent",
+                     "borderColor": ACCENT if t == (VALID_TICKERS[2] if len(VALID_TICKERS)>2 else VALID_TICKERS[0]) else BORDER},
+              n_clicks=0)
         )
 
     return html.Div([
@@ -566,6 +567,16 @@ def update_tab_classes(active):
 def show_panel(active):
     return [{"display":"block"} if t==active else {"display":"none"} for t in TABS]
 
+@app.callback(
+    [Output({"type":"ticker-chip","index":t},"style") for t in VALID_TICKERS],
+    Input("selected-ticker","data")
+)
+def update_chip_styles(selected):
+    return [
+        {"background": BG3, "borderColor": ACCENT} if t == selected
+        else {"background": "transparent", "borderColor": BORDER}
+        for t in VALID_TICKERS
+    ]
 
 # ─────────────────────────────────────────────
 #  HELPERS — plot style
@@ -1461,8 +1472,13 @@ def render_macro(_ticker):
             )
             charts.append(html.Div([dcc.Graph(figure=fig_s, config={"displayModeBar":False})], className="section"))
 
-        chart_grid = html.Div(charts, style={"display":"grid","gridTemplateColumns":"repeat(4,1fr)","gap":"8px","marginTop":"16px"})
+           top_charts    = [charts[i] for i in range(len(charts)) if list(MACRO_TICKERS.keys())[i] not in ["CL=F","BTC-USD"]]
+           bottom_charts = [charts[i] for i in range(len(charts)) if list(MACRO_TICKERS.keys())[i] in ["CL=F","BTC-USD"]]
 
+           chart_grid = html.Div([
+               html.Div(top_charts,    style={"display":"grid","gridTemplateColumns":f"repeat({len(top_charts)},1fr)","gap":"8px","marginTop":"16px"}),
+               html.Div(bottom_charts, style={"display":"grid","gridTemplateColumns":"repeat(2,1fr)","gap":"8px","marginTop":"8px"}),
+           ])
         return html.Div([
             kpi_grid,
             html.Div(vix_note, style={"color":vix_col,"fontSize":"11px","padding":"10px 16px",
