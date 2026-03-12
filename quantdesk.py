@@ -446,8 +446,8 @@ def make_layout():
                 ], style={"display":"flex","justifyContent":"space-between"}),
                 html.Div(f"${m['last_px']:.2f}", style={"color": TXT, "marginTop":"2px", "fontSize":"11px"}),
             ], className="ticker-chip", id={"type":"ticker-chip","index":t},
-               style={"background":"transparent","borderColor":BORDER},
-               n_clicks=0)
+              style={"background": "transparent", "borderColor": BORDER},
+              n_clicks=0)
         )
 
     return html.Div([
