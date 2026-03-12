@@ -1190,10 +1190,10 @@ def render_candlestick(ticker):
         )
         fig.update_xaxes(showgrid=True, gridcolor=BORDER, linecolor=BORDER)
         fig.update_yaxes(showgrid=True, gridcolor=BORDER, linecolor=BORDER)
-        fig.update_yaxis(title_text="Price", row=1, col=1)
-        fig.update_yaxis(title_text="Vol",   row=2, col=1)
-        fig.update_yaxis(title_text="RSI",   row=3, col=1, range=[0,100])
-        fig.update_yaxis(title_text="MACD",  row=4, col=1)
+        fig.update_yaxes(title_text="Price", row=1, col=1)
+        fig.update_yaxes(title_text="Vol",   row=2, col=1)
+        fig.update_yaxes(title_text="RSI",   row=3, col=1, range=[0,100])
+        fig.update_yaxes(title_text="MACD",  row=4, col=1)
 
         # Last RSI reading
         last_rsi = float(rsi.iloc[-1])
@@ -1499,7 +1499,7 @@ def render_macro(_ticker):
             )
             charts.append(html.Div([dcc.Graph(figure=fig_s, config={"displayModeBar":False})], className="section"))
 
-        chart_grid = html.Div(charts, style={"display":"grid","gridTemplateColumns":"repeat(4,1fr)","gap":"8px","marginTop":"16px"})
+        chart_grid = html.Div(charts, style={"display":"grid","gridTemplateColumns":"1fr 1fr","gap":"16px","marginTop":"16px"})
 
         return html.Div([
             kpi_grid,
