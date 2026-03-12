@@ -1475,10 +1475,14 @@ def render_macro(_ticker):
            top_charts    = [charts[i] for i in range(len(charts)) if list(MACRO_TICKERS.keys())[i] not in ["CL=F","BTC-USD"]]
            bottom_charts = [charts[i] for i in range(len(charts)) if list(MACRO_TICKERS.keys())[i] in ["CL=F","BTC-USD"]]
 
-           chart_grid = html.Div([
-               html.Div(top_charts,    style={"display":"grid","gridTemplateColumns":f"repeat({len(top_charts)},1fr)","gap":"8px","marginTop":"16px"}),
-               html.Div(bottom_charts, style={"display":"grid","gridTemplateColumns":"repeat(2,1fr)","gap":"8px","marginTop":"8px"}),
-           ])
+        macro_keys = list(MACRO_TICKERS.keys())
+        top_charts = [charts[i] for i in range(len(charts)) if macro_keys[i] not in ["CL=F","BTC-USD"]]
+        bottom_charts = [charts[i] for i in range(len(charts)) if macro_keys[i] in ["CL=F","BTC-USD"]]
+        chart_grid = html.Div([
+            html.Div(top_charts, style={"display":"grid","gridTemplateColumns":f"repeat({len(top_charts)},1fr)","gap":"8px","marginTop":"16px"}),
+            html.Div(bottom_charts, style={"display":"grid","gridTemplateColumns":"repeat(2,1fr)","gap":"8px","marginTop":"8px"}),
+        ])
+               
         return html.Div([
             kpi_grid,
             html.Div(vix_note, style={"color":vix_col,"fontSize":"11px","padding":"10px 16px",
