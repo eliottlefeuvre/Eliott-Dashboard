@@ -53,8 +53,8 @@ BG3     = "#0a1628"
 BORDER  = "#0d2040"
 TXT     = "#c9d4e8"
 DIM     = "#556070"
-ACCENT  = "#00f5d4"
-RED     = "#f72585"
+ACCENT  = "#00c853"
+RED     = "#ff1744"
 YELLOW  = "#fee440"
 BLUE    = "#4cc9f0"
 
@@ -420,6 +420,11 @@ app.index_string = """
     .signal-buy  { color:#00c853; font-weight:600; }
     .signal-hold { color:#ffab00; font-weight:600; }
     .signal-sell { color:#ff1744; font-weight:600; }
+    .range-btn { cursor:pointer; padding:4px 10px; border:1px solid #0d2040; background:transparent;
+                 font-family:inherit; font-size:10px; letter-spacing:1px; color:#556070;
+                 border-radius:3px; transition:all .15s; }
+    .range-btn:hover { color:#00f5d4; border-color:#00f5d4; }
+    .range-btn.active { color:#040d1a; background:#00f5d4; border-color:#00f5d4; font-weight:600; }
   </style>
 </head>
 <body>
@@ -473,6 +478,15 @@ def make_layout():
                  style={"background":"#060f1f","borderBottom":f"1px solid {BORDER}",
                         "padding":"8px 24px","display":"flex","gap":"8px","overflowX":"auto","flexWrap":"nowrap"}),
 
+        # ── TIME RANGE BAR ──────────────────────────────
+        html.Div([
+            html.Span("TIME RANGE", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginRight":"12px","alignSelf":"center"}),
+            *[html.Button(lbl, id=f"range-btn-{key}", className="range-btn" + (" active" if key=="1y" else ""),
+                          n_clicks=0)
+              for lbl, key in [("1D","1d"),("1W","1w"),("1M","1mo"),("6M","6mo"),("1Y","1y"),("MAX","max")]],
+        ], style={"background":BG,"borderBottom":f"1px solid {BORDER}","padding":"6px 24px",
+                  "display":"flex","gap":"6px","alignItems":"center"}),
+
         # ── CONTENT ─────────────────────────────────────
         html.Div([
             # TAB BAR
@@ -485,7 +499,7 @@ def make_layout():
                 html.Button("Portfolio",   id="tab-portfolio",   className="tab",        n_clicks=0),
                 html.Button("Macro",       id="tab-macro",       className="tab",        n_clicks=0),
                 html.Button("Comparison",  id="tab-comparison",  className="tab",        n_clicks=0),
-                html.Button("Signal",      id="tab-signal",      className="tab",        n_clicks=0),
+                html.Button("Signal",   id="tab-signal",      className="tab",        n_clicks=0),
             ], style={"display":"flex","borderBottom":f"1px solid {BORDER}","marginBottom":"20px","flexWrap":"wrap"}),
 
             # PANELS
@@ -505,6 +519,7 @@ def make_layout():
         dcc.Store(id="selected-ticker", data=VALID_TICKERS[2] if len(VALID_TICKERS)>2 else VALID_TICKERS[0]),
         dcc.Store(id="active-tab", data="overview"),
         dcc.Store(id="portfolio-weights", data={t: round(100/len(VALID_TICKERS),1) for t in VALID_TICKERS}),
+        dcc.Store(id="time-range", data="1y"),
 
         # Footer
         html.Div([
@@ -534,6 +549,52 @@ def select_ticker(*args):
     tid = ctx.triggered[0]["prop_id"].split(".")[0]
     import json
     return json.loads(tid)["index"]
+
+
+# ─────────────────────────────────────────────
+#  CALLBACKS — chip highlight
+# ─────────────────────────────────────────────
+@app.callback(
+    [Output({"type":"ticker-chip","index":t},"style") for t in VALID_TICKERS],
+    Input("selected-ticker","data")
+)
+def update_chip_styles(selected):
+    styles = []
+    for t in VALID_TICKERS:
+        col = COLORS[TICKERS.index(t)]
+        if t == selected:
+            styles.append({
+                "background": hex_rgba(col, 0.15),
+                "borderColor": col,
+                "boxShadow": f"0 0 8px {hex_rgba(col, 0.4)}",
+            })
+        else:
+            styles.append({"background":"transparent","borderColor":BORDER})
+    return styles
+
+
+# ─────────────────────────────────────────────
+#  CALLBACKS — time range
+# ─────────────────────────────────────────────
+RANGE_KEYS = ["1d","1w","1mo","6mo","1y","max"]
+
+@app.callback(
+    Output("time-range","data"),
+    [Input(f"range-btn-{k}","n_clicks") for k in RANGE_KEYS],
+    prevent_initial_call=True
+)
+def update_time_range(*args):
+    ctx = callback_context
+    if not ctx.triggered: raise dash.exceptions.PreventUpdate
+    tid = ctx.triggered[0]["prop_id"].replace(".n_clicks","").replace("range-btn-","")
+    return tid
+
+@app.callback(
+    [Output(f"range-btn-{k}","className") for k in RANGE_KEYS],
+    Input("time-range","data")
+)
+def update_range_btn_classes(active):
+    return ["range-btn active" if k==active else "range-btn" for k in RANGE_KEYS]
 
 
 # ─────────────────────────────────────────────
@@ -581,7 +642,19 @@ def styled_fig(fig, height=300, title=""):
     fig.update_yaxes(showgrid=True, gridcolor=BORDER, linecolor=BORDER)
     return fig
 
-def sign_color(v): return ACCENT if v >= 0 else RED
+def filter_by_range(series, range_key):
+    """Slice a time-indexed Series/DataFrame to the chosen range."""
+    if range_key == "max":
+        return series
+    end = series.index[-1]
+    delta = {"1d": timedelta(days=1), "1w": timedelta(weeks=1),
+             "1mo": timedelta(days=30), "6mo": timedelta(days=182),
+             "1y": timedelta(days=365)}
+    start = end - delta.get(range_key, timedelta(days=365))
+    return series[series.index >= start]
+
+
+
 
 def kpi_card(label, value, sub="", value_color=TXT):
     return html.Div([
@@ -590,12 +663,15 @@ def kpi_card(label, value, sub="", value_color=TXT):
         html.Div(sub,   style={"color":DIM,"fontSize":"10px","marginTop":"4px"}),
     ], className="metric-card")
 
+def sign_color(v): return ACCENT if v >= 0 else RED
+
 
 # ─────────────────────────────────────────────
 #  PANEL — OVERVIEW
 # ─────────────────────────────────────────────
-@app.callback(Output("panel-overview","children"), Input("selected-ticker","data"))
-def render_overview(ticker):
+@app.callback(Output("panel-overview","children"),
+              [Input("selected-ticker","data"), Input("time-range","data")])
+def render_overview(ticker, range_key):
     try:
         m   = METRICS[ticker]
         col = COLORS[TICKERS.index(ticker)]
@@ -612,7 +688,7 @@ def render_overview(ticker):
         ], style={"display":"grid","gridTemplateColumns":"repeat(8,1fr)","gap":"8px","marginBottom":"16px"})
 
         # ── Price chart (simple AreaChart, no subplots to avoid axis issues) ──
-        prices = m["prices"]
+        prices = filter_by_range(m["prices"], range_key)
 
         # Safely extract volume from global CLOSE download
         vol_series = None
@@ -622,9 +698,11 @@ def render_overview(ticker):
             if isinstance(raw_v.columns, pd.MultiIndex):
                 raw_v.columns = raw_v.columns.get_level_values(0)
             if "Volume" in raw_v.columns:
-                vol_series = raw_v["Volume"].squeeze()
+                vol_series = filter_by_range(raw_v["Volume"].squeeze(), range_key)
         except Exception:
             pass
+
+        range_lbl = {"1d":"1 DAY","1w":"1 WEEK","1mo":"1 MONTH","6mo":"6 MONTHS","1y":"1 YEAR","max":"ALL TIME"}.get(range_key,"1Y")
 
         # Build subplot figure safely
         fig_price = make_subplots(
@@ -651,7 +729,7 @@ def render_overview(ticker):
             font=dict(family="IBM Plex Mono, Courier New, monospace", color=TXT, size=11),
             margin=dict(l=50, r=20, t=40, b=40),
             height=310,
-            title=dict(text=f"PRICE & VOLUME — {ticker}  (1Y)", font=dict(size=11, color=BLUE), x=0),
+            title=dict(text=f"PRICE & VOLUME — {ticker}  ({range_lbl})", font=dict(size=11, color=BLUE), x=0),
             showlegend=False, hovermode="x unified",
         )
         fig_price.update_xaxes(showgrid=True, gridcolor=BORDER, linecolor=BORDER)
@@ -723,74 +801,81 @@ def render_overview(ticker):
 # ─────────────────────────────────────────────
 #  PANEL — MONTE CARLO
 # ─────────────────────────────────────────────
-@app.callback(Output("panel-montecarlo","children"), Input("selected-ticker","data"))
-def render_mc(ticker):
-    m     = METRICS[ticker]
-    col   = COLORS[TICKERS.index(ticker)]
-    paths = monte_carlo(m["returns"], m["last_px"])
-    finals = paths[:, -1]
-    p5, p25, p50, p75, p95 = np.percentile(finals, [5,25,50,75,95])
-    days_ax = np.arange(MC_DAYS + 1)
+@app.callback(Output("panel-montecarlo","children"),
+              [Input("selected-ticker","data"), Input("time-range","data")])
+def render_mc(ticker, range_key):
+    try:
+        m     = METRICS[ticker]
+        col   = COLORS[TICKERS.index(ticker)]
+        # Use range-filtered returns; fall back to full history if too few points
+        filtered_rets = filter_by_range(m["returns"], range_key)
+        if len(filtered_rets) < 10:
+            filtered_rets = m["returns"]
+        paths   = monte_carlo(filtered_rets, m["last_px"])
+        finals  = paths[:, -1]
+        p5, p25, p50, p75, p95 = np.percentile(finals, [5, 25, 50, 75, 95])
+        days_ax = np.arange(MC_DAYS + 1)
 
-    # KPIs
-    exp_ret = (p50 - m["last_px"]) / m["last_px"] * 100
-    prob_profit = (finals > m["last_px"]).mean() * 100
+        # KPIs
+        exp_ret     = (p50 - m["last_px"]) / m["last_px"] * 100
+        prob_profit = (finals > m["last_px"]).mean() * 100
 
-    kpis = html.Div([
-        kpi_card("CURRENT PRICE",  f"${m['last_px']:.2f}", "Entry point", TXT),
-        kpi_card("BEAR CASE P5",   f"${p5:.2f}", f"{(p5/m['last_px']-1)*100:+.1f}%", RED),
-        kpi_card("BASE CASE P50",  f"${p50:.2f}", f"{(p50/m['last_px']-1)*100:+.1f}%", YELLOW),
-        kpi_card("BULL CASE P95",  f"${p95:.2f}", f"{(p95/m['last_px']-1)*100:+.1f}%", ACCENT),
-        kpi_card("EXPECTED RETURN",f"{exp_ret:+.1f}%", "63-day horizon", sign_color(exp_ret)),
-        kpi_card("PROB. OF PROFIT",f"{prob_profit:.0f}%", "P(price > entry)", ACCENT if prob_profit>50 else RED),
-    ], style={"display":"grid","gridTemplateColumns":"repeat(6,1fr)","gap":"8px","marginBottom":"16px"})
+        kpis = html.Div([
+            kpi_card("CURRENT PRICE",  f"${m['last_px']:.2f}", "Entry point", TXT),
+            kpi_card("BEAR CASE P5",   f"${p5:.2f}", f"{(p5/m['last_px']-1)*100:+.1f}%", RED),
+            kpi_card("BASE CASE P50",  f"${p50:.2f}", f"{(p50/m['last_px']-1)*100:+.1f}%", YELLOW),
+            kpi_card("BULL CASE P95",  f"${p95:.2f}", f"{(p95/m['last_px']-1)*100:+.1f}%", ACCENT),
+            kpi_card("EXPECTED RETURN",f"{exp_ret:+.1f}%", "63-day horizon", sign_color(exp_ret)),
+            kpi_card("PROB. OF PROFIT",f"{prob_profit:.0f}%", "P(price > entry)", ACCENT if prob_profit>50 else RED),
+        ], style={"display":"grid","gridTemplateColumns":"repeat(6,1fr)","gap":"8px","marginBottom":"16px"})
 
-    # Paths chart
-    fig_mc = go.Figure()
-    # Plot 100 sampled paths
-    sample_idx = np.random.choice(MC_SIMS, size=min(100, MC_SIMS), replace=False)
-    for i in sample_idx:
-        fig_mc.add_trace(go.Scatter(
-            x=days_ax, y=paths[i],
-            mode="lines", line=dict(color="#1a3060", width=0.5),
-            showlegend=False, hoverinfo="skip"
+        # Paths chart
+        fig_mc     = go.Figure()
+        sample_idx = np.random.choice(MC_SIMS, size=min(100, MC_SIMS), replace=False)
+        for i in sample_idx:
+            fig_mc.add_trace(go.Scatter(
+                x=days_ax, y=paths[i],
+                mode="lines", line=dict(color="#1a3060", width=0.5),
+                showlegend=False, hoverinfo="skip"
+            ))
+        p5_path  = np.percentile(paths, 5,  axis=0)
+        p50_path = np.percentile(paths, 50, axis=0)
+        p95_path = np.percentile(paths, 95, axis=0)
+        fig_mc.add_trace(go.Scatter(x=days_ax, y=p95_path, mode="lines",
+            line=dict(color=ACCENT, width=2, dash="dash"), name="P95 Bull"))
+        fig_mc.add_trace(go.Scatter(x=days_ax, y=p50_path, mode="lines",
+            line=dict(color=YELLOW, width=2), name="P50 Base"))
+        fig_mc.add_trace(go.Scatter(x=days_ax, y=p5_path, mode="lines",
+            line=dict(color=RED, width=2, dash="dash"), name="P5 Bear"))
+        fig_mc.add_hline(y=m["last_px"], line_dash="dot", line_color=DIM, line_width=1)
+        styled_fig(fig_mc, 350, f"MONTE CARLO SIMULATION — {ticker}  ({MC_SIMS} PATHS · {MC_DAYS} TRADING DAYS)")
+        fig_mc.update_xaxes(title_text="Trading Days")
+        fig_mc.update_yaxes(title_text="Price ($)", tickprefix="$")
+
+        # Distribution chart
+        fig_dist = go.Figure()
+        fig_dist.add_trace(go.Histogram(
+            x=finals, nbinsx=60,
+            marker=dict(color=col, opacity=0.8, line=dict(color=BG, width=0.3)),
+            name="Final Price Distribution"
         ))
-    # Percentile bands
-    p5_path  = np.percentile(paths, 5,  axis=0)
-    p50_path = np.percentile(paths, 50, axis=0)
-    p95_path = np.percentile(paths, 95, axis=0)
-    fig_mc.add_trace(go.Scatter(x=days_ax, y=p95_path, mode="lines",
-        line=dict(color=ACCENT, width=2, dash="dash"), name="P95 Bull"))
-    fig_mc.add_trace(go.Scatter(x=days_ax, y=p50_path, mode="lines",
-        line=dict(color=YELLOW, width=2), name="P50 Base"))
-    fig_mc.add_trace(go.Scatter(x=days_ax, y=p5_path, mode="lines",
-        line=dict(color=RED, width=2, dash="dash"), name="P5 Bear"))
-    fig_mc.add_hline(y=m["last_px"], line_dash="dot", line_color=DIM, line_width=1)
-    styled_fig(fig_mc, 350, f"MONTE CARLO SIMULATION — {ticker}  ({MC_SIMS} PATHS · {MC_DAYS} TRADING DAYS)")
-    fig_mc.update_xaxes(title_text="Trading Days")
-    fig_mc.update_yaxes(title_text="Price ($)", tickprefix="$")
+        fig_dist.add_vline(x=p5,  line_color=RED,    line_dash="dash", annotation_text="P5",  annotation_font=dict(color=RED))
+        fig_dist.add_vline(x=p50, line_color=YELLOW, line_dash="dash", annotation_text="P50", annotation_font=dict(color=YELLOW))
+        fig_dist.add_vline(x=p95, line_color=ACCENT, line_dash="dash", annotation_text="P95", annotation_font=dict(color=ACCENT))
+        fig_dist.add_vline(x=m["last_px"], line_color=DIM, line_dash="dot",
+                           annotation_text="Today", annotation_font=dict(color=DIM))
+        styled_fig(fig_dist, 250, "FINAL PRICE DISTRIBUTION (63-DAY HORIZON)")
+        fig_dist.update_xaxes(title_text="Price ($)", tickprefix="$")
+        fig_dist.update_yaxes(title_text="Frequency")
 
-    # Distribution chart
-    fig_dist = go.Figure()
-    fig_dist.add_trace(go.Histogram(
-        x=finals, nbinsx=60,
-        marker=dict(color=col, opacity=0.8, line=dict(color=BG, width=0.3)),
-        name="Final Price Distribution"
-    ))
-    fig_dist.add_vline(x=p5,  line_color=RED,    line_dash="dash", annotation_text="P5",  annotation_font=dict(color=RED))
-    fig_dist.add_vline(x=p50, line_color=YELLOW, line_dash="dash", annotation_text="P50", annotation_font=dict(color=YELLOW))
-    fig_dist.add_vline(x=p95, line_color=ACCENT, line_dash="dash", annotation_text="P95", annotation_font=dict(color=ACCENT))
-    fig_dist.add_vline(x=m["last_px"], line_color=DIM, line_dash="dot",
-                       annotation_text="Today", annotation_font=dict(color=DIM))
-    styled_fig(fig_dist, 250, "FINAL PRICE DISTRIBUTION (63-DAY HORIZON)")
-    fig_dist.update_xaxes(title_text="Price ($)", tickprefix="$")
-    fig_dist.update_yaxes(title_text="Frequency")
-
-    return html.Div([
-        kpis,
-        html.Div([dcc.Graph(figure=fig_mc,   config={"displayModeBar":False})], className="section", style={"marginBottom":"16px"}),
-        html.Div([dcc.Graph(figure=fig_dist, config={"displayModeBar":False})], className="section"),
-    ])
+        return html.Div([
+            kpis,
+            html.Div([dcc.Graph(figure=fig_mc,   config={"displayModeBar":False})], className="section", style={"marginBottom":"16px"}),
+            html.Div([dcc.Graph(figure=fig_dist, config={"displayModeBar":False})], className="section"),
+        ])
+    except Exception as e:
+        return html.Div(f"⚠ Monte Carlo error: {e}",
+                        style={"color":RED,"padding":"40px","fontFamily":"monospace"})
 
 
 # ─────────────────────────────────────────────
@@ -869,14 +954,15 @@ def render_corr(_ticker):
 # ─────────────────────────────────────────────
 #  PANEL — RISK
 # ─────────────────────────────────────────────
-@app.callback(Output("panel-risk","children"), Input("selected-ticker","data"))
-def render_risk(ticker):
+@app.callback(Output("panel-risk","children"),
+              [Input("selected-ticker","data"), Input("time-range","data")])
+def render_risk(ticker, range_key):
     try:
         m   = METRICS[ticker]
         col = COLORS[TICKERS.index(ticker)]
 
         # ── Rolling volatility ──
-        roll_vol = m["roll_vol"].dropna() * 100
+        roll_vol = filter_by_range(m["roll_vol"].dropna() * 100, range_key)
         roll_vol = roll_vol.squeeze()  # ensure Series not DataFrame
         mean_vol = float(roll_vol.mean())
 
@@ -899,7 +985,7 @@ def render_risk(ticker):
         )
 
         # ── Return distribution ──
-        daily_rets = m["returns"].squeeze() * 100
+        daily_rets = filter_by_range(m["returns"].squeeze(), range_key) * 100
         mu, sig    = float(daily_rets.mean()), float(daily_rets.std())
         x_norm     = np.linspace(float(daily_rets.min()), float(daily_rets.max()), 200)
         y_norm     = stats.norm.pdf(x_norm, mu, sig)
@@ -1007,13 +1093,15 @@ def render_risk(ticker):
 # ─────────────────────────────────────────────
 #  PANEL — COMPARISON
 # ─────────────────────────────────────────────
-@app.callback(Output("panel-comparison","children"), Input("selected-ticker","data"))
-def render_comparison(ticker):
+@app.callback(Output("panel-comparison","children"),
+              [Input("selected-ticker","data"), Input("time-range","data")])
+def render_comparison(ticker, range_key):
     m   = METRICS[ticker]
     col = COLORS[TICKERS.index(ticker)]
+    range_lbl = {"1d":"1 DAY","1w":"1 WEEK","1mo":"1 MONTH","6mo":"6 MONTHS","1y":"1 YEAR","max":"ALL TIME"}.get(range_key,"1Y")
 
     # vs SPY & QQQ cumulative return
-    prices  = m["prices"]
+    prices  = filter_by_range(m["prices"], range_key)
     cum_sel = (prices / prices.iloc[0] - 1) * 100
 
     fig_cmp = go.Figure()
@@ -1023,7 +1111,7 @@ def render_comparison(ticker):
         hovertemplate="%{y:+.2f}%<extra>" + ticker + "</extra>"
     ))
     if METRICS.get("_spy") is not None:
-        spy = METRICS["_spy"].reindex(prices.index).ffill()
+        spy = filter_by_range(METRICS["_spy"], range_key).reindex(prices.index).ffill()
         cum_spy = (spy / spy.iloc[0] - 1) * 100
         fig_cmp.add_trace(go.Scatter(
             x=cum_spy.index, y=cum_spy.values, mode="lines",
@@ -1031,7 +1119,7 @@ def render_comparison(ticker):
             hovertemplate="%{y:+.2f}%<extra>S&P 500</extra>"
         ))
     if METRICS.get("_qqq") is not None:
-        qqq = METRICS["_qqq"].reindex(prices.index).ffill()
+        qqq = filter_by_range(METRICS["_qqq"], range_key).reindex(prices.index).ffill()
         cum_qqq = (qqq / qqq.iloc[0] - 1) * 100
         fig_cmp.add_trace(go.Scatter(
             x=cum_qqq.index, y=cum_qqq.values, mode="lines",
@@ -1039,22 +1127,21 @@ def render_comparison(ticker):
             hovertemplate="%{y:+.2f}%<extra>NASDAQ</extra>"
         ))
     fig_cmp.add_hline(y=0, line_color=DIM, line_dash="dot", line_width=1)
-    styled_fig(fig_cmp, 300, f"{ticker} vs S&P 500 vs NASDAQ — CUMULATIVE RETURN (1Y)")
+    styled_fig(fig_cmp, 300, f"{ticker} vs S&P 500 vs NASDAQ — CUMULATIVE RETURN ({range_lbl})")
     fig_cmp.update_yaxes(ticksuffix="%")
 
     # All tickers cumulative returns overlay
     fig_all = go.Figure()
     for i, t in enumerate(VALID_TICKERS):
-        p = METRICS[t]["prices"]
+        p = filter_by_range(METRICS[t]["prices"], range_key)
         cum = (p / p.iloc[0] - 1) * 100
         fig_all.add_trace(go.Scatter(
             x=cum.index, y=cum.values, mode="lines",
-            line=dict(color=COLORS[i], width=1.5 if t==ticker else 1,
-                      dash="solid" if t==ticker else "solid"),
+            line=dict(color=COLORS[i], width=1.5 if t==ticker else 1),
             name=t, opacity=1.0 if t==ticker else 0.55,
             hovertemplate=f"%{{y:+.2f}}%<extra>{t}</extra>"
         ))
-    styled_fig(fig_all, 280, "ALL TICKERS — CUMULATIVE RETURN COMPARISON (1Y)")
+    styled_fig(fig_all, 280, f"ALL TICKERS — CUMULATIVE RETURN ({range_lbl})")
     fig_all.update_yaxes(ticksuffix="%")
 
     # Annual return bar
@@ -1094,16 +1181,20 @@ def render_comparison(ticker):
 # ─────────────────────────────────────────────
 #  PANEL — CANDLESTICK + INDICATORS
 # ─────────────────────────────────────────────
-@app.callback(Output("panel-candlestick","children"), Input("selected-ticker","data"))
-def render_candlestick(ticker):
+@app.callback(Output("panel-candlestick","children"),
+              [Input("selected-ticker","data"), Input("time-range","data")])
+def render_candlestick(ticker, range_key):
     try:
         col = COLORS[TICKERS.index(ticker)]
         end   = datetime.today()
+        # Always download 400 days; slice to range after
         start = end - timedelta(days=400)
         raw = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
         if isinstance(raw.columns, pd.MultiIndex):
             raw.columns = raw.columns.get_level_values(0)
         raw = raw.dropna()
+        # Apply time range slice
+        raw = filter_by_range(raw, range_key)
 
         o = raw["Open"].squeeze()
         h = raw["High"].squeeze()
@@ -1179,11 +1270,12 @@ def render_candlestick(ticker):
         fig.add_trace(go.Bar(x=list(macd_hist.index), y=list(macd_hist.values),
             marker_color=hist_colors, name="Histogram", showlegend=False), row=4, col=1)
 
+        range_lbl = {"1d":"1 DAY","1w":"1 WEEK","1mo":"1 MONTH","6mo":"6 MONTHS","1y":"1 YEAR","max":"ALL TIME"}.get(range_key,"1Y")
         fig.update_layout(
             paper_bgcolor=BG2, plot_bgcolor=BG,
             font=dict(family="IBM Plex Mono, Courier New, monospace", color=TXT, size=11),
             margin=dict(l=55, r=20, t=45, b=40), height=700,
-            title=dict(text=f"CANDLESTICK + INDICATORS — {ticker}", font=dict(size=11, color=BLUE), x=0),
+            title=dict(text=f"CANDLESTICK + INDICATORS — {ticker}  ({range_lbl})", font=dict(size=11, color=BLUE), x=0),
             legend=dict(bgcolor="rgba(0,0,0,0)", orientation="h", x=0, y=1.01, font=dict(size=10)),
             xaxis_rangeslider_visible=False,
             hovermode="x unified",
@@ -1239,7 +1331,7 @@ def render_candlestick(ticker):
     Input("selected-ticker","data")
 )
 def render_portfolio_layout(_ticker):
-    """Render the static shell — sliders + empty results div."""
+    """Render static shell: sliders + empty result containers."""
     default_w = round(100 / len(VALID_TICKERS), 1)
     sliders = []
     for i, t in enumerate(VALID_TICKERS):
@@ -1258,7 +1350,8 @@ def render_portfolio_layout(_ticker):
         html.Div([
             html.Div([
                 html.Div("ADJUST WEIGHTS", className="section-title"),
-                html.Div("Sliders update charts in real time", style={"color":DIM,"fontSize":"9px","marginBottom":"16px"}),
+                html.Div("Sliders update charts in real time",
+                         style={"color":DIM,"fontSize":"9px","marginBottom":"16px"}),
                 *sliders,
             ], className="section", style={"flex":"0 0 260px"}),
             html.Div(id="portfolio-charts", style={"flex":"1"}),
@@ -1268,63 +1361,51 @@ def render_portfolio_layout(_ticker):
 
 @app.callback(
     [Output("portfolio-content","children"),
-     Output("portfolio-charts","children")] + [Output(f"w-label-{t}","children") for t in VALID_TICKERS],
+     Output("portfolio-charts","children")] +
+    [Output(f"w-label-{t}","children") for t in VALID_TICKERS],
     [Input(f"slider-{t}","value") for t in VALID_TICKERS],
 )
 def update_portfolio(*slider_vals):
-    """Fires every time any slider moves — recomputes everything."""
+    """Fires on every slider move — recomputes everything live."""
     try:
-        weights = {t: (v if v is not None else 0) for t, v in zip(VALID_TICKERS, slider_vals)}
+        weights = {t: (v if v is not None else 0)
+                   for t, v in zip(VALID_TICKERS, slider_vals)}
         total   = sum(weights.values())
         labels  = [f"{weights[t]:.0f}%" for t in VALID_TICKERS]
 
         if total == 0:
-            empty = html.Div("Set at least one weight above 0 to see results.",
+            empty = html.Div("Set at least one weight above 0.",
                              style={"color":DIM,"padding":"40px","textAlign":"center"})
             return empty, empty, *labels
 
         result = portfolio_optimize(weights, METRICS)
-
         if not result:
             empty = html.Div("Not enough data.", style={"color":DIM,"padding":"40px"})
             return empty, empty, *labels
 
-        # ── KPI cards ──
-        norm_w = {t: weights[t] / total for t in VALID_TICKERS}
+        # ── KPI row ──
         port_kpis = html.Div([
-            html.Div([
-                html.Div("YOUR PORTFOLIO", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
-                html.Div(f"{result['ret']:+.1f}%", style={"fontSize":"20px","fontWeight":"600","color":sign_color(result['ret'])}),
-                html.Div("Ann. Return", style={"color":DIM,"fontSize":"10px","marginTop":"4px"}),
-            ], className="metric-card"),
-            html.Div([
-                html.Div("VOLATILITY", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
-                html.Div(f"{result['vol']:.1f}%", style={"fontSize":"20px","fontWeight":"600","color":YELLOW}),
-                html.Div("Ann. σ", style={"color":DIM,"fontSize":"10px","marginTop":"4px"}),
-            ], className="metric-card"),
-            html.Div([
-                html.Div("SHARPE", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
-                html.Div(f"{result['sharpe']:.2f}", style={"fontSize":"20px","fontWeight":"600","color":ACCENT if result['sharpe']>1 else RED}),
-                html.Div("Ratio", style={"color":DIM,"fontSize":"10px","marginTop":"4px"}),
-            ], className="metric-card"),
-            html.Div([
-                html.Div("MAX SHARPE", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
-                html.Div(f"{result['max_sharpe']['ret']:+.1f}% / {result['max_sharpe']['vol']:.1f}%",
-                         style={"fontSize":"14px","fontWeight":"600","color":"#00c853"}),
-                html.Div("Ret / Vol", style={"color":DIM,"fontSize":"10px","marginTop":"4px"}),
-            ], className="metric-card"),
-            html.Div([
-                html.Div("MIN VARIANCE", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
-                html.Div(f"{result['min_var']['ret']:+.1f}% / {result['min_var']['vol']:.1f}%",
-                         style={"fontSize":"14px","fontWeight":"600","color":BLUE}),
-                html.Div("Ret / Vol", style={"color":DIM,"fontSize":"10px","marginTop":"4px"}),
-            ], className="metric-card"),
-            html.Div([
-                html.Div("TOTAL WEIGHT", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
-                html.Div(f"{total:.0f}%", style={"fontSize":"20px","fontWeight":"600",
-                         "color":"#00c853" if 95<=total<=105 else YELLOW}),
-                html.Div("(ideally 100%)", style={"color":DIM,"fontSize":"10px","marginTop":"4px"}),
-            ], className="metric-card"),
+            html.Div([html.Div("YOUR PORTFOLIO", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
+                      html.Div(f"{result['ret']:+.1f}%", style={"fontSize":"20px","fontWeight":"600","color":sign_color(result['ret'])}),
+                      html.Div("Ann. Return", style={"color":DIM,"fontSize":"10px","marginTop":"4px"})], className="metric-card"),
+            html.Div([html.Div("VOLATILITY", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
+                      html.Div(f"{result['vol']:.1f}%", style={"fontSize":"20px","fontWeight":"600","color":YELLOW}),
+                      html.Div("Ann. σ", style={"color":DIM,"fontSize":"10px","marginTop":"4px"})], className="metric-card"),
+            html.Div([html.Div("SHARPE", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
+                      html.Div(f"{result['sharpe']:.2f}", style={"fontSize":"20px","fontWeight":"600","color":ACCENT if result['sharpe']>1 else RED}),
+                      html.Div("Ratio", style={"color":DIM,"fontSize":"10px","marginTop":"4px"})], className="metric-card"),
+            html.Div([html.Div("MAX SHARPE", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
+                      html.Div(f"{result['max_sharpe']['ret']:+.1f}% / {result['max_sharpe']['vol']:.1f}%",
+                               style={"fontSize":"14px","fontWeight":"600","color":"#00c853"}),
+                      html.Div("Ret / Vol", style={"color":DIM,"fontSize":"10px","marginTop":"4px"})], className="metric-card"),
+            html.Div([html.Div("MIN VARIANCE", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
+                      html.Div(f"{result['min_var']['ret']:+.1f}% / {result['min_var']['vol']:.1f}%",
+                               style={"fontSize":"14px","fontWeight":"600","color":BLUE}),
+                      html.Div("Ret / Vol", style={"color":DIM,"fontSize":"10px","marginTop":"4px"})], className="metric-card"),
+            html.Div([html.Div("TOTAL WEIGHT", style={"color":DIM,"fontSize":"9px","letterSpacing":"2px","marginBottom":"6px"}),
+                      html.Div(f"{total:.0f}%", style={"fontSize":"20px","fontWeight":"600",
+                               "color":"#00c853" if 95<=total<=105 else YELLOW}),
+                      html.Div("(ideally 100%)", style={"color":DIM,"fontSize":"10px","marginTop":"4px"})], className="metric-card"),
         ], style={"display":"grid","gridTemplateColumns":"repeat(6,1fr)","gap":"8px","marginBottom":"16px"})
 
         # ── Efficient frontier ──
@@ -1369,27 +1450,21 @@ def update_portfolio(*slider_vals):
             legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
             hovermode="closest",
             xaxis=dict(title="Volatility (%)", gridcolor=BORDER, ticksuffix="%"),
-            yaxis=dict(title="Return (%)", gridcolor=BORDER, ticksuffix="%"),
+            yaxis=dict(title="Return (%)",     gridcolor=BORDER, ticksuffix="%"),
         )
 
-        # ── Weight allocation bars ──
-        ms_w = {result["tickers"][i]: round(result["max_sharpe"]["w"][i]*100,1) for i in range(len(result["tickers"]))}
-        mv_w = {result["tickers"][i]: round(result["min_var"]["w"][i]*100,1) for i in range(len(result["tickers"]))}
-        user_w_norm = {t: round(weights[t]/total*100,1) for t in result["tickers"]}
+        # ── Weight bars: yours vs max sharpe vs min variance ──
+        norm_w = {t: round(weights[t]/total*100, 1) for t in result["tickers"]}
+        ms_w   = {result["tickers"][i]: round(result["max_sharpe"]["w"][i]*100, 1) for i in range(len(result["tickers"]))}
+        mv_w   = {result["tickers"][i]: round(result["min_var"]["w"][i]*100,    1) for i in range(len(result["tickers"]))}
 
         fig_wts = go.Figure()
-        fig_wts.add_trace(go.Bar(
-            x=list(user_w_norm.keys()), y=list(user_w_norm.values()),
-            name="Your Weights", marker_color=ACCENT, opacity=0.85,
-        ))
-        fig_wts.add_trace(go.Bar(
-            x=list(ms_w.keys()), y=list(ms_w.values()),
-            name="Max Sharpe", marker_color="#00c853", opacity=0.85,
-        ))
-        fig_wts.add_trace(go.Bar(
-            x=list(mv_w.keys()), y=list(mv_w.values()),
-            name="Min Variance", marker_color=BLUE, opacity=0.85,
-        ))
+        fig_wts.add_trace(go.Bar(x=list(norm_w.keys()), y=list(norm_w.values()),
+            name="Your Weights",  marker_color=ACCENT,    opacity=0.9))
+        fig_wts.add_trace(go.Bar(x=list(ms_w.keys()),   y=list(ms_w.values()),
+            name="Max Sharpe",    marker_color="#00c853", opacity=0.85))
+        fig_wts.add_trace(go.Bar(x=list(mv_w.keys()),   y=list(mv_w.values()),
+            name="Min Variance",  marker_color=BLUE,      opacity=0.85))
         fig_wts.update_layout(
             paper_bgcolor=BG2, plot_bgcolor=BG,
             font=dict(family="IBM Plex Mono, Courier New, monospace", color=TXT, size=11),
@@ -1407,7 +1482,7 @@ def update_portfolio(*slider_vals):
         return port_kpis, charts, *labels
 
     except Exception as e:
-        err = html.Div(f"⚠ Portfolio error: {e}", style={"color":RED,"padding":"20px","fontFamily":"monospace"})
+        err    = html.Div(f"⚠ Portfolio error: {e}", style={"color":RED,"padding":"20px","fontFamily":"monospace"})
         labels = [f"{v:.0f}%" if v else "0%" for v in slider_vals]
         return err, err, *labels
 
@@ -1499,7 +1574,7 @@ def render_macro(_ticker):
             )
             charts.append(html.Div([dcc.Graph(figure=fig_s, config={"displayModeBar":False})], className="section"))
 
-        chart_grid = html.Div(charts, style={"display":"grid","gridTemplateColumns":"1fr 1fr","gap":"16px","marginTop":"16px"})
+        chart_grid = html.Div(charts, style={"display":"grid","gridTemplateColumns":"repeat(2,1fr)","gap":"16px","marginTop":"16px"})
 
         return html.Div([
             kpi_grid,
